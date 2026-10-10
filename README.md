@@ -1,4 +1,4 @@
-# Memory Web — MVP starter
+# Memory Web 
 
 A standalone conversation graph prototype using React + TypeScript + Vite, React Flow, FastAPI, and PostgreSQL.
 
