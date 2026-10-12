@@ -1,76 +1,174 @@
-# Memory Web 
+# Memory Web
 
-A standalone conversation graph prototype using React + TypeScript + Vite, React Flow, FastAPI, and PostgreSQL.
+**Memory Web** is a conversation graph prototype that explores a better way to navigate long AI conversations. Instead of treating a conversation as one linear chat history, it represents messages and topics as nodes connected through a graph.
+
+Users can select a message and continue the current discussion or branch into a separate direction.
+
+## Features
+
+- Interactive conversation graph built with React Flow
+- Message and topic nodes
+- Select nodes to inspect their content
+- Continue or branch from an existing message
+- FastAPI backend for graph retrieval and follow-up creation
+- PostgreSQL persistence for conversations, messages, and graph edges
+- SQLAlchemy models and Alembic database migrations
+- Automated API tests using pytest
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Frontend | React, TypeScript, Vite |
+| Graph visualization | React Flow (`@xyflow/react`) |
+| Backend | Python, FastAPI |
+| Database | PostgreSQL |
+| ORM and migrations | SQLAlchemy, Alembic |
+| Testing | pytest, FastAPI TestClient |
+
+## Architecture
+
+The frontend sends requests to the FastAPI backend. The backend reads and writes conversation data through SQLAlchemy, with PostgreSQL storing the graph's conversations, nodes, and edges.
+
+```text
+React + TypeScript
+        |
+        v
+     FastAPI
+        |
+        v
+    SQLAlchemy
+        |
+        v
+    PostgreSQL
+```
 
 ## Prerequisites
-- Node.js 20+
-- Python 3.11+
-- Docker Desktop (recommended for PostgreSQL)
 
-## 1. Start PostgreSQL
+- Node.js and npm
+- Python 3.11+
+- Docker Desktop with Docker Compose
+- Git
+
+## Local Setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/GaneshG2006/memory-web.git
+cd memory-web
+```
+
+### 2. Start PostgreSQL
+
 From the project root:
 
 ```bash
-docker compose up -d db
+docker compose up -d
 ```
 
-The local database is exposed at `localhost:5432`.
-Database: `memory_web` · User: `memory_user` · Password: `memory_dev_password`
+The development database uses port `5432`.
 
-These credentials are for local development only. Change them before any deployment.
+Default local development credentials:
 
-## 2. Start the backend
-Open a terminal:
+- Database: `memory_web`
+- User: `memory_user`
+- Password: `memory_dev_password`
 
-```bash
+These credentials are for local development only. Do not use them in production.
+
+### 3. Set up the backend
+
+Open a terminal in the project root:
+
+```powershell
 cd backend
 python -m venv .venv
 ```
 
-Windows PowerShell:
+On Windows PowerShell, install the dependencies using:
+
 ```powershell
-.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-macOS/Linux:
-```bash
-source .venv/bin/activate
+Configure `backend/.env` with your local database URL:
+
+```env
+DATABASE_URL=postgresql+psycopg://memory_user:memory_dev_password@localhost:5432/memory_web
 ```
 
-Then:
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+Apply database migrations from the project root in a separate terminal:
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
-API docs: http://127.0.0.1:8000/docs
-Health endpoint: http://127.0.0.1:8000/health
+Start the backend from the `backend` directory:
 
-The starter API uses an in-memory demo graph so you can test the first vertical slice before database persistence is implemented.
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```
 
-## 3. Start the frontend
-Open a second terminal from the project root:
+Backend endpoints:
 
-```bash
+- Health check: http://127.0.0.1:8000/health
+- Interactive API documentation: http://127.0.0.1:8000/docs
+
+### 4. Set up the frontend
+
+Open another terminal:
+
+```powershell
 cd frontend
-npm install
-npm run dev
+npm.cmd install
+npm.cmd run dev
 ```
 
-Open the URL Vite prints, normally http://localhost:5173.
+Open the local URL printed by Vite, normally http://localhost:5173.
 
-## What works in this starter
-- Interactive graph with message and topic nodes
-- Select a node to inspect its content
-- Choose Continue or Branch
-- Send a follow-up to the local API
-- API stores demo messages in memory until the server restarts
+## Running Tests
 
-## What is intentionally not implemented yet
-- Real LLM provider integration
-- Persistent database models and migrations
-- Login, accounts, cloud deployment
+From the project root:
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend/tests -q
+```
+
+The current test suite previously reported **17 passing tests** in the development environment.
+
+## Current Project Status
+
+### Implemented
+
+- Interactive conversation graph
+- Continue and Branch follow-up flows
+- FastAPI graph and follow-up endpoints
+- PostgreSQL-backed persistence
+- SQLAlchemy data models
+- Alembic migrations
+- Basic automated API tests
+
+### Planned
+
+- Integration with a real LLM provider
+- Context-aware AI responses based on conversation ancestry
+- Improved graph layout for large conversations
 - Automatic topic extraction
+- User accounts and authentication
 - Browser extension
+- Deployment
 
-Build these incrementally after verifying the starter works. Never put an LLM API key in frontend code.
+## Security Notes
+
+- Never commit `.env` files or API keys.
+- The included database credentials are for local development only.
+- Before deployment, configure secure credentials, environment variables, and appropriate access controls.
+
+## Limitations
+
+Memory Web is currently a prototype. Follow-up assistant responses are placeholders rather than responses generated by a real LLM. The current implementation has been tested locally, but it has not undergone a complete production-readiness review.
+
+## Future Direction
+
+The goal is to make conversations easier to explore by connecting related ideas, preserving context across branches, and allowing users to revisit or extend earlier discussion paths.
