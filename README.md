@@ -1,174 +1,116 @@
 # Memory Web
 
-**Memory Web** is a conversation graph prototype that explores a better way to navigate long AI conversations. Instead of treating a conversation as one linear chat history, it represents messages and topics as nodes connected through a graph.
-
-Users can select a message and continue the current discussion or branch into a separate direction.
-
-## Features
-
-- Interactive conversation graph built with React Flow
-- Message and topic nodes
-- Select nodes to inspect their content
-- Continue or branch from an existing message
-- FastAPI backend for graph retrieval and follow-up creation
-- PostgreSQL persistence for conversations, messages, and graph edges
-- SQLAlchemy models and Alembic database migrations
-- Automated API tests using pytest
-
-## Tech Stack
-
-| Component | Technology |
-|---|---|
-| Frontend | React, TypeScript, Vite |
-| Graph visualization | React Flow (`@xyflow/react`) |
-| Backend | Python, FastAPI |
-| Database | PostgreSQL |
-| ORM and migrations | SQLAlchemy, Alembic |
-| Testing | pytest, FastAPI TestClient |
+Memory Web is a local conversation-graph prototype for exploring discussions as connected messages and topic nodes instead of a single linear transcript. Users can inspect nodes and continue or branch a conversation from an existing message.
 
 ## Architecture
 
-The frontend sends requests to the FastAPI backend. The backend reads and writes conversation data through SQLAlchemy, with PostgreSQL storing the graph's conversations, nodes, and edges.
+- **Frontend:** React, TypeScript, Vite, and React Flow (`@xyflow/react`).
+- **Backend:** FastAPI with SQLAlchemy models and Alembic migrations.
+- **Persistence:** PostgreSQL stores conversations, message/topic nodes, and graph edges.
+- **Tests:** Python API tests use an isolated SQLite database; frontend graph-layout tests run with Node's test runner.
 
-```text
-React + TypeScript
-        |
-        v
-     FastAPI
-        |
-        v
-    SQLAlchemy
-        |
-        v
-    PostgreSQL
-```
+The frontend talks to the local API at `http://127.0.0.1:8000`. The graph layout is deterministic for reordered graph data, separates branches into distinct lanes, avoids collisions for new nodes, and preserves saved node positions in browser storage.
 
-## Prerequisites
+## Implemented
 
-- Node.js and npm
-- Python 3.11+
-- Docker Desktop with Docker Compose
-- Git
+- Interactive graph with message and topic nodes, selectable node details, and draggable node positions.
+- Branch and Continue follow-up flows, persisted as graph nodes and edges.
+- Idempotently seeded demo conversation data.
+- Health and graph API endpoints, plus follow-up validation and persistence.
+- Deterministic graph placement, branch lanes, collision avoidance, and frontend layout tests.
+- PostgreSQL schema migrations and automated backend API tests.
 
-## Local Setup
+**Assistant responses are placeholders.** Follow-up creation currently returns a demo response anchored to the selected parent content; real LLM integration and context-aware response generation are planned, not implemented.
 
-### 1. Clone the repository
+## Local development on Windows
 
-```bash
-git clone https://github.com/GaneshG2006/memory-web.git
-cd memory-web
-```
+Prerequisites: Git, Python 3.11 or newer, Node.js with npm, and Docker Desktop with Docker Compose.
 
-### 2. Start PostgreSQL
+Run commands in PowerShell from the repository root unless otherwise noted.
 
-From the project root:
+### 1. Start PostgreSQL
 
-```bash
+```powershell
 docker compose up -d
 ```
 
-The development database uses port `5432`.
+The Compose service exposes PostgreSQL on port `5432` and creates the local `memory_web` database. Its credentials are for local development only.
 
-Default local development credentials:
+### 2. Configure and start the backend
 
-- Database: `memory_web`
-- User: `memory_user`
-- Password: `memory_dev_password`
-
-These credentials are for local development only. Do not use them in production.
-
-### 3. Set up the backend
-
-Open a terminal in the project root:
+Create a virtual environment, install dependencies, and copy the example environment file:
 
 ```powershell
-cd backend
+Set-Location .\backend
 python -m venv .venv
-```
-
-On Windows PowerShell, install the dependencies using:
-
-```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+Set-Location ..
 ```
 
-Configure `backend/.env` with your local database URL:
-
-```env
-DATABASE_URL=postgresql+psycopg://memory_user:memory_dev_password@localhost:5432/memory_web
-```
-
-Apply database migrations from the project root in a separate terminal:
+Review `backend\.env` and set `DATABASE_URL` to match the local PostgreSQL service. Apply migrations from the repository root:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
-Start the backend from the `backend` directory:
+Start the API in a separate PowerShell window:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+Set-Location .\backend
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-Backend endpoints:
+The API listens at `http://127.0.0.1:8000`.
 
-- Health check: http://127.0.0.1:8000/health
-- Interactive API documentation: http://127.0.0.1:8000/docs
+### 3. Start the frontend
 
-### 4. Set up the frontend
-
-Open another terminal:
+In another PowerShell window:
 
 ```powershell
-cd frontend
+Set-Location .\frontend
 npm.cmd install
 npm.cmd run dev
 ```
 
-Open the local URL printed by Vite, normally http://localhost:5173.
+Open the local URL printed by Vite, normally `http://localhost:5173`.
 
-## Running Tests
+## API
 
-From the project root:
+- `GET /health` — API health status.
+- `GET /api/conversations/{conversation_id}/graph` — graph nodes and edges for a conversation; the UI loads the seeded `demo` conversation.
+- `POST /api/follow-ups` — create a follow-up from a parent node. JSON body: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, placeholder assistant node, and connecting edges.
+- `GET /docs` — interactive FastAPI documentation when the backend is running.
+
+## Tests and build
+
+From the repository root, run backend API tests:
 
 ```powershell
-.\backend\.venv\Scripts\python.exe -m pytest backend/tests -q
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests -q
 ```
 
-The current test suite previously reported **17 passing tests** in the development environment.
+Run frontend layout tests and the production build:
 
-## Current Project Status
+```powershell
+Set-Location .\frontend
+npm.cmd test
+npm.cmd run build
+```
 
-### Implemented
+The test TypeScript project can also be checked directly:
 
-- Interactive conversation graph
-- Continue and Branch follow-up flows
-- FastAPI graph and follow-up endpoints
-- PostgreSQL-backed persistence
-- SQLAlchemy data models
-- Alembic migrations
-- Basic automated API tests
+```powershell
+npx.cmd tsc --project tsconfig.test.json
+```
 
-### Planned
+## Planned
 
-- Integration with a real LLM provider
-- Context-aware AI responses based on conversation ancestry
-- Improved graph layout for large conversations
-- Automatic topic extraction
-- User accounts and authentication
-- Browser extension
-- Deployment
+- Integrate a real LLM provider and assemble context from conversation ancestry.
+- Extract topics automatically rather than relying on seeded/demo topic data.
+- Add user accounts and authentication.
+- Explore a browser extension and deployment.
 
-## Security Notes
+## Security and project status
 
-- Never commit `.env` files or API keys.
-- The included database credentials are for local development only.
-- Before deployment, configure secure credentials, environment variables, and appropriate access controls.
-
-## Limitations
-
-Memory Web is currently a prototype. Follow-up assistant responses are placeholders rather than responses generated by a real LLM. The current implementation has been tested locally, but it has not undergone a complete production-readiness review.
-
-## Future Direction
-
-The goal is to make conversations easier to explore by connecting related ideas, preserving context across branches, and allowing users to revisit or extend earlier discussion paths.
+This is a local prototype, not a production-ready or deployed service. Authentication is not implemented. Do not commit `.env` files, credentials, or API keys. The Compose database credentials are development-only; use secure secrets management and restrict access before any hosted deployment. No API keys are currently needed because LLM integration is not implemented.
