@@ -196,7 +196,7 @@ export default function App() {
       if (assistantNode) {
         setSelected(assistantNode)
       }
-      setStatus(`Follow-up added · ${mode} mode · demo answer`)
+      setStatus(`Follow-up added · ${mode} mode · AI response`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Could not create follow-up')
     } finally {
@@ -244,7 +244,7 @@ export default function App() {
               <div className="meta-row"><span>Node ID</span><code>{selectedNode.id.slice(0, 12)}</code></div>
               <div className="divider" />
               <h3>Follow-up</h3>
-              <p className="hint">Your new question will use this node as its context anchor. The starter currently returns a demo answer.</p>
+              <p className="hint">Your question uses this node's conversation ancestry as context. Ollama generates the response locally.</p>
               <div className="mode-switch">
                 <button className={mode === 'branch' ? 'mode active' : 'mode'} onClick={() => setMode('branch')}><GitBranch size={15} /> Branch</button>
                 <button className={mode === 'continue' ? 'mode active' : 'mode'} onClick={() => setMode('continue')}><Plus size={15} /> Continue</button>

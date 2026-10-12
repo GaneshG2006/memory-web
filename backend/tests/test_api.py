@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -7,6 +8,22 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.seed import reset_demo_store
+
+
+@pytest.fixture(autouse=True)
+def mock_ollama(monkeypatch):
+    calls = []
+
+    def post(url, *, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return httpx.Response(
+            200,
+            json={"message": {"role": "assistant", "content": "Mocked Ollama answer"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("app.main.httpx.post", post)
+    return calls
 
 
 @pytest.fixture()
@@ -25,7 +42,7 @@ def test_engine():
 
 
 @pytest.fixture()
-def client(test_engine):
+def client(test_engine, monkeypatch):
     TestingSessionLocal = sessionmaker(
         autocommit=False,
         autoflush=False,
@@ -40,6 +57,7 @@ def client(test_engine):
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    monkeypatch.setattr("app.main.seed_demo_data", lambda session: None)
 
     # Seed only the isolated test database.
     with TestingSessionLocal() as db:
@@ -95,6 +113,150 @@ def test_follow_up_continue_relationship(client):
     )
     assert any(e["source"] == "welcome" and e["target"] == "answer" for e in edges)
     assert any(e["source"] == "answer" and e["target"] == "docker" for e in edges)
+
+
+def test_ollama_generation_uses_ordered_context_and_persists_response(client, mock_ollama):
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "docker",
+        "mode": "continue",
+        "prompt": "How does this relate to the discussion?",
+    })
+    assert response.status_code == 200
+    user_node, answer_node = response.json()["created_nodes"]
+    assert answer_node["content"] == "Mocked Ollama answer"
+
+    request = mock_ollama[0]
+    assert request["url"] == "http://127.0.0.1:11434/api/chat"
+    assert request["timeout"] == 120
+    assert request["json"]["model"] == "qwen2.5:7b"
+    assert request["json"]["stream"] is False
+    messages = request["json"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {
+        "role": "user",
+        "content": "Explain microservices architecture.",
+    }
+    assert messages[2]["role"] == "assistant"
+    assert messages[3] == {
+        "role": "system",
+        "content": (
+            "Supporting topic context: "
+            "Docker: package an application and its dependencies into containers."
+        ),
+    }
+    assert messages[-1] == {
+        "role": "user",
+        "content": "How does this relate to the discussion?",
+    }
+    graph = client.get("/api/conversations/demo/graph").json()
+    saved_answer = next(node for node in graph["nodes"] if node["id"] == answer_node["id"])
+    assert saved_answer["content"] == "Mocked Ollama answer"
+    assert any(edge["target"] == user_node["id"] for edge in graph["edges"])
+
+
+def test_ollama_settings_are_configurable(client, monkeypatch, mock_ollama):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:7b-custom")
+    monkeypatch.setenv("OLLAMA_TIMEOUT", "45.5")
+
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": "Check configured Ollama settings",
+    })
+    assert response.status_code == 200
+    assert mock_ollama[0]["url"] == "http://localhost:11434/api/chat"
+    assert mock_ollama[0]["json"]["model"] == "qwen2.5:7b-custom"
+    assert mock_ollama[0]["timeout"] == 45.5
+
+
+def test_context_follows_only_selected_branch_ancestry(client, mock_ollama):
+    first_branch = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "branch",
+        "prompt": "First branch only",
+    })
+    second_branch = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "branch",
+        "prompt": "Sibling branch secret",
+    })
+    first_branch_answer = first_branch.json()["created_nodes"][1]
+    continuation = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": first_branch_answer["id"],
+        "mode": "continue",
+        "prompt": "Continue this branch",
+    })
+    assert first_branch.status_code == second_branch.status_code == continuation.status_code == 200
+
+    messages = mock_ollama[2]["json"]["messages"]
+    contents = [message["content"] for message in messages]
+    assert "First branch only" in contents
+    assert "Sibling branch secret" not in contents
+    assert contents.index("Explain microservices architecture.") < contents.index(
+        "Microservices split an application into independently deployable services. "
+        "Common related topics include APIs, databases, and Docker."
+    ) < contents.index("First branch only") < contents.index("Continue this branch")
+
+
+@pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
+def test_ollama_connection_failure_or_timeout_does_not_persist(
+    client, monkeypatch, error_type
+):
+    def fail_request(*args, **kwargs):
+        raise error_type("Ollama unavailable")
+
+    monkeypatch.setattr("app.main.httpx.post", fail_request)
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": "This should not be saved",
+    })
+    assert response.status_code == 503
+    assert "Ollama" in response.json()["detail"]
+    graph = client.get("/api/conversations/demo/graph").json()
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
+
+
+@pytest.mark.parametrize(
+    "ollama_response",
+    [
+        httpx.Response(
+            200, content=b"not JSON", request=httpx.Request("POST", "http://localhost")
+        ),
+        httpx.Response(
+            200,
+            json={"message": {"content": "  "}},
+            request=httpx.Request("POST", "http://localhost"),
+        ),
+        httpx.Response(
+            200,
+            json={"message": {"content": 42}},
+            request=httpx.Request("POST", "http://localhost"),
+        ),
+    ],
+)
+def test_invalid_or_empty_ollama_response_does_not_persist(
+    client, monkeypatch, ollama_response
+):
+    monkeypatch.setattr("app.main.httpx.post", lambda *args, **kwargs: ollama_response)
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": "This should not be saved",
+    })
+    assert response.status_code == 502
+    graph = client.get("/api/conversations/demo/graph").json()
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
 
 
 def test_follow_up_branch_relationship(client):

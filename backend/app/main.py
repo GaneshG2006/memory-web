@@ -1,5 +1,9 @@
+import logging
+import math
+import os
 from uuid import uuid4
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -10,7 +14,15 @@ from app.database import get_db
 from app.models import Conversation, Node, Message, TopicNode, GraphEdge
 from app.seed import seed_demo_data
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Memory Web API", version="0.2.0")
+
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
+DEFAULT_OLLAMA_TIMEOUT = 120.0
+MAX_CONTEXT_NODES = 32
+MAX_CONTEXT_CHARS = 12000
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +59,104 @@ def edge_to_dict(edge: GraphEdge) -> dict:
         "target": edge.target,
         "type": edge.type,
     }
+
+
+def build_ollama_messages(db: Session, parent: Node, prompt: str) -> list[dict[str, str]]:
+    ancestry: list[Node] = []
+    seen_ids: set[str] = set()
+    current: Node | None = parent
+
+    while current is not None and len(ancestry) < MAX_CONTEXT_NODES:
+        if current.id in seen_ids or current.conversation_id != parent.conversation_id:
+            break
+        seen_ids.add(current.id)
+        ancestry.append(current)
+        current = db.get(Node, current.parent_id) if current.parent_id else None
+
+    context: list[tuple[Node, str]] = []
+    remaining_chars = MAX_CONTEXT_CHARS
+    for node in ancestry:
+        if node.role not in {"user", "assistant"} and node.kind != "topic":
+            continue
+        if remaining_chars <= 0:
+            break
+        content = node.content[-remaining_chars:]
+        context.append((node, content))
+        remaining_chars -= len(content)
+
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "Continue the conversation helpfully. Topic entries are supporting context, "
+                "not prior user or assistant turns."
+            ),
+        }
+    ]
+    for node, content in reversed(context):
+        if node.kind == "topic" or node.role == "topic":
+            messages.append({
+                "role": "system",
+                "content": f"Supporting topic context: {content}",
+            })
+        elif node.role in {"user", "assistant"}:
+            messages.append({"role": node.role, "content": content})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+def generate_assistant_response(messages: list[dict[str, str]]) -> str:
+    base_url = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip()
+    try:
+        timeout = float(os.getenv("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="OLLAMA_TIMEOUT must be a number") from exc
+
+    if not base_url or not model or not math.isfinite(timeout) or timeout <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail="OLLAMA_BASE_URL, OLLAMA_MODEL, and OLLAMA_TIMEOUT must be valid",
+        )
+
+    try:
+        response = httpx.post(
+            f"{base_url}/api/chat",
+            json={"model": model, "messages": messages, "stream": False},
+            timeout=timeout,
+        )
+    except (httpx.TimeoutException, httpx.RequestError) as exc:
+        logger.warning("Ollama request failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama is unavailable or the request timed out",
+        ) from exc
+
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Ollama returned HTTP status %s", exc.response.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail="Ollama returned an error response",
+        ) from exc
+    except ValueError as exc:
+        logger.warning("Ollama returned invalid JSON")
+        raise HTTPException(
+            status_code=502,
+            detail="Ollama returned an invalid response",
+        ) from exc
+
+    message = payload.get("message") if isinstance(payload, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        logger.warning("Ollama response did not contain assistant content")
+        raise HTTPException(
+            status_code=502,
+            detail="Ollama returned an empty or invalid assistant response",
+        )
+    return content.strip()
 
 
 @app.on_event("startup")
@@ -116,6 +226,8 @@ def create_follow_up(body: FollowUpRequest, db: Session = Depends(get_db)):
 
     parent_branch = parent.branch_id or "main"
     branch_id = str(uuid4()) if body.mode == "branch" else parent_branch
+    context_messages = build_ollama_messages(db, parent, stripped_prompt)
+    answer_content = generate_assistant_response(context_messages)
 
     user_node = Message(
         id=str(uuid4()),
@@ -138,17 +250,13 @@ def create_follow_up(body: FollowUpRequest, db: Session = Depends(get_db)):
     )
     db.add(follow_up_edge)
 
-    # Placeholder only; real LLM context assembly comes in a later milestone.
     answer_node = Message(
         id=str(uuid4()),
         conversation_id=body.conversation_id,
         parent_id=user_node.id,
         branch_id=branch_id,
         role="assistant",
-        content=(
-            f"Demo response to: {stripped_prompt}\n\n"
-            f"Context anchor: {parent.content[:240]}"
-        ),
+        content=answer_content,
         kind="message",
     )
     db.add(answer_node)
