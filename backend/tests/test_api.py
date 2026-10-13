@@ -2,11 +2,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.main import app
+from app.main import MAX_CONTEXT_CHARS, MAX_CONTEXT_NODES, app, build_ollama_messages
+from app.models import Message, Node
 from app.seed import reset_demo_store
 
 
@@ -202,6 +203,175 @@ def test_context_follows_only_selected_branch_ancestry(client, mock_ollama):
         "Microservices split an application into independently deployable services. "
         "Common related topics include APIs, databases, and Docker."
     ) < contents.index("First branch only") < contents.index("Continue this branch")
+
+
+def test_continue_and_branch_from_same_parent_use_same_context(client, mock_ollama):
+    prompt = "Compare two deployment options."
+    branch = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "branch",
+        "prompt": prompt,
+    })
+    continuation = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": prompt,
+    })
+
+    assert branch.status_code == continuation.status_code == 200
+    assert mock_ollama[0]["json"]["messages"] == mock_ollama[1]["json"]["messages"]
+
+    branch_user, branch_answer = branch.json()["created_nodes"]
+    continue_user, continue_answer = continuation.json()["created_nodes"]
+    assert branch_user["branch_id"] != "main"
+    assert branch_answer["branch_id"] == branch_user["branch_id"]
+    assert continue_user["branch_id"] == "main"
+    assert continue_answer["branch_id"] == "main"
+
+    branch_edge = branch.json()["created_edges"][0]
+    continue_edge = continuation.json()["created_edges"][0]
+    assert branch_edge["type"] == "branch"
+    assert continue_edge["type"] == "continue"
+
+
+def test_context_stops_at_cyclic_ancestry(client, test_engine):
+    with Session(test_engine) as db:
+        welcome = db.get(Node, "welcome")
+        assert welcome is not None
+        welcome.parent_id = "answer"
+        db.commit()
+
+        parent = db.get(Node, "docker")
+        assert parent is not None
+        messages = build_ollama_messages(db, parent, "Cycle check")
+
+    assert messages[0]["role"] == "system"
+    assert [message["content"] for message in messages[1:]] == [
+        "Explain microservices architecture.",
+        (
+            "Microservices split an application into independently deployable services. "
+            "Common related topics include APIs, databases, and Docker."
+        ),
+        (
+            "Supporting topic context: "
+            "Docker: package an application and its dependencies into containers."
+        ),
+        "Cycle check",
+    ]
+    assert len(messages) == 5
+
+
+def test_context_stops_when_ancestor_is_missing(client, test_engine):
+    class MissingAncestorSession:
+        def __init__(self, session, missing_id):
+            self.session = session
+            self.missing_id = missing_id
+
+        def get(self, model, identity):
+            if identity == self.missing_id:
+                return None
+            return self.session.get(model, identity)
+
+    with Session(test_engine) as db:
+        parent = db.get(Node, "answer")
+        assert parent is not None
+        messages = build_ollama_messages(
+            MissingAncestorSession(db, "welcome"),
+            parent,
+            "Missing ancestor check",
+        )
+
+    assert [message["content"] for message in messages[1:]] == [
+        parent.content,
+        "Missing ancestor check",
+    ]
+
+
+def test_context_is_chronological_and_limited_to_32_ancestry_nodes(
+    client, test_engine
+):
+    assert MAX_CONTEXT_NODES == 32
+    with Session(test_engine) as db:
+        parent_id = None
+        for index in range(MAX_CONTEXT_NODES + 2):
+            node = Message(
+                id=f"history-{index:02d}",
+                conversation_id="demo",
+                parent_id=parent_id,
+                branch_id="main",
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"history-{index:02d}",
+                kind="message",
+            )
+            db.add(node)
+            parent_id = node.id
+        db.commit()
+
+        parent = db.get(Node, parent_id)
+        assert parent is not None
+        messages = build_ollama_messages(db, parent, "Node limit check")
+
+    context = messages[1:-1]
+    assert len(context) == MAX_CONTEXT_NODES
+    assert [message["content"] for message in context] == [
+        f"history-{index:02d}" for index in range(2, MAX_CONTEXT_NODES + 2)
+    ]
+    assert messages[-1]["content"] == "Node limit check"
+
+
+def test_context_character_limit_truncates_oldest_content_first(
+    client, test_engine
+):
+    assert MAX_CONTEXT_CHARS == 12000
+    oldest_content = "oldest:" + "o" * 4993
+    middle_content = "middle:" + "m" * 4993
+    newest_content = "newest:" + "n" * 4993
+    with Session(test_engine) as db:
+        oldest = Message(
+            id="char-oldest",
+            conversation_id="demo",
+            parent_id=None,
+            branch_id="main",
+            role="user",
+            content=oldest_content,
+            kind="message",
+        )
+        middle = Message(
+            id="char-middle",
+            conversation_id="demo",
+            parent_id=oldest.id,
+            branch_id="main",
+            role="assistant",
+            content=middle_content,
+            kind="message",
+        )
+        newest = Message(
+            id="char-newest",
+            conversation_id="demo",
+            parent_id=middle.id,
+            branch_id="main",
+            role="user",
+            content=newest_content,
+            kind="message",
+        )
+        db.add_all([oldest, middle, newest])
+        db.commit()
+
+        parent = db.get(Node, newest.id)
+        assert parent is not None
+        messages = build_ollama_messages(db, parent, "Character limit check")
+
+    context = messages[1:-1]
+    assert len(context) == 3
+    assert [message["content"] for message in context] == [
+        oldest_content[-(MAX_CONTEXT_CHARS - 2 * 5000):],
+        middle_content,
+        newest_content,
+    ]
+    assert sum(len(message["content"]) for message in context) == MAX_CONTEXT_CHARS
+    assert messages[-1]["content"] == "Character limit check"
 
 
 @pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
