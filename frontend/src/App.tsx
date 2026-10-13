@@ -1,20 +1,31 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Background, Controls, MiniMap, ReactFlow, addEdge,
-  type Connection, type Edge, type Node, useEdgesState, useNodesState,
+  type Connection, type Edge, type Node, type ReactFlowInstance,
+  useEdgesState, useNodesState,
 } from '@xyflow/react'
-import { GitBranch, MessageSquare, Network, Plus, Send } from 'lucide-react'
+import { GitBranch, MessageSquare, Network, Plus, Search, Send } from 'lucide-react'
 import {
   calculateGraphLayout,
   getSessionPositions,
+  NODE_HEIGHT,
+  NODE_WIDTH,
   saveSessionPositions,
   updateSingleSessionPosition,
   type ApiNode,
   type ApiEdge,
   type Position,
 } from './layout'
+import {
+  getSearchStatus,
+  normalizeSearchQuery,
+  resolveSearchSelection,
+  type SearchResult,
+} from './search'
+import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
+type SearchResponse = { results: SearchResult[] }
 
 const API = 'http://127.0.0.1:8000'
 
@@ -98,8 +109,14 @@ export default function App() {
   const [allMessages, setAllMessages] = useState<ApiNode[]>([])
   const [mode, setMode] = useState<'continue' | 'branch'>('branch')
   const [prompt, setPrompt] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searchError, setSearchError] = useState('')
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [hasSearched, setHasSearched] = useState(false)
   const [status, setStatus] = useState('Connecting to local API…')
   const [busy, setBusy] = useState(false)
+  const flowInstance = useRef<ReactFlowInstance | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -145,6 +162,55 @@ export default function App() {
     () => selected ? allMessages.find((item) => item.id === selected.id) ?? selected : null,
     [selected, allMessages],
   )
+
+  async function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const query = normalizeSearchQuery(searchQuery)
+    setSearchError('')
+    setSearchResults([])
+    setHasSearched(true)
+    if (!query) return
+
+    setSearchBusy(true)
+    try {
+      const response = await fetch(
+        `${API}/api/conversations/demo/search?q=${encodeURIComponent(query)}`,
+      )
+      if (!response.ok) {
+        throw new Error(await parseApiError(response))
+      }
+      let result: SearchResponse
+      try {
+        result = await response.json()
+      } catch {
+        throw new Error('Received invalid JSON from API')
+      }
+      setSearchResults(result.results)
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Could not search conversation')
+    } finally {
+      setSearchBusy(false)
+    }
+  }
+
+  function selectSearchResult(result: SearchResult) {
+    const selection = resolveSearchSelection(result.id, allMessages, nodes)
+    if (!selection) {
+      setSearchError('This node is no longer in the graph. Refresh the graph and search again.')
+      return
+    }
+
+    setSelected(selection.node)
+    setNodes((current) => current.map((node) => ({
+      ...node,
+      selected: node.id === result.id,
+    })))
+    flowInstance.current?.setCenter(
+      selection.position.x + NODE_WIDTH / 2,
+      selection.position.y + NODE_HEIGHT / 2,
+      { zoom: 1.15, duration: 500 },
+    )
+  }
 
   const onConnect = useCallback((connection: Connection) => {
     setEdges((current) => addEdge(connection, current))
@@ -213,6 +279,51 @@ export default function App() {
       <section className="workspace">
         <div className="graph-area">
           <div className="graph-heading"><div><h1>Your conversation web</h1><p>Select a node to inspect it or start a follow-up.</p></div><span className="demo-pill">DEMO DATA</span></div>
+          <section className="conversation-search" aria-label="Search conversation">
+            <form className="search-form" onSubmit={(event) => void submitSearch(event)}>
+              <label className="search-input-wrap">
+                <Search size={16} aria-hidden="true" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value)
+                    setSearchResults([])
+                    setSearchError('')
+                    setHasSearched(false)
+                  }}
+                  placeholder="Search messages and topics…"
+                  aria-label="Search messages and topics"
+                />
+              </label>
+              <button className="search-button" type="submit" disabled={searchBusy}>
+                {searchBusy ? 'Searching…' : 'Search'}
+              </button>
+            </form>
+            {searchError ? (
+              <p className="search-message search-error" role="alert">{searchError}</p>
+            ) : (
+              <p className="search-message" aria-live="polite">
+                {searchBusy ? 'Searching conversation…' : getSearchStatus(searchQuery, searchResults.length, hasSearched)}
+              </p>
+            )}
+            {searchResults.length > 0 && (
+              <ul className="search-results" aria-label="Search results">
+                {searchResults.map((result) => (
+                  <li key={result.id}>
+                    <button
+                      className="search-result"
+                      type="button"
+                      onClick={() => selectSearchResult(result)}
+                    >
+                      <span className="search-result-meta">{result.kind} · {result.role}</span>
+                      <span className="search-result-excerpt">{result.excerpt}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
           <div className="graph-canvas">
             <ReactFlow
               nodes={nodes}
@@ -221,6 +332,7 @@ export default function App() {
               onEdgesChange={onEdgesChange}
               onNodeDragStop={onNodeDragStop}
               onConnect={onConnect}
+              onInit={(instance) => { flowInstance.current = instance }}
               onNodeClick={(_, node) => {
                 const item = allMessages.find((message) => message.id === node.id)
                 if (item) setSelected(item)

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node --experimental-strip-types --test src/layout.test.ts",
+    "test": "node --experimental-strip-types --test src/layout.test.ts src/search.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

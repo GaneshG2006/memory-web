@@ -15,13 +15,14 @@ The frontend currently loads the seeded `demo` conversation from the API at `htt
 ## Implemented
 
 - Interactive conversation graph with message and topic nodes, node inspection, and draggable positions.
+- Case-insensitive search across message and topic content in the current conversation, with results that focus the matching graph node.
 - Continue and Branch follow-ups saved as graph nodes and edges.
 - Local assistant response generation through Ollama using Qwen2.5 7B.
 - Context assembly from the selected node's ancestry in chronological order. Sibling branches and unrelated conversations are excluded; topic nodes are sent as supporting context. Context is bounded to at most 32 ancestry nodes and 12,000 characters.
 - Ollama URL, model, and request timeout configuration through environment variables.
 - Explicit API errors for unavailable/timed-out Ollama requests and invalid/empty model responses. Failed generation does not save partial follow-up nodes or edges.
 - Health and graph endpoints, request validation, idempotent demo data seeding, and saved graph data using the existing PostgreSQL schema.
-- Automated backend API and frontend graph-layout tests.
+- Automated backend API and frontend tests.
 
 ## Windows local development
 
@@ -103,6 +104,7 @@ Set these variables in `backend\.env`. Defaults are used when an Ollama setting 
 
 - `GET /health` — API health status.
 - `GET /api/conversations/{conversation_id}/graph` — graph nodes and edges for a conversation; the current UI requests the seeded `demo` conversation.
+- `GET /api/conversations/{conversation_id}/search?q={query}` — case-insensitive substring search of message and topic content in the selected conversation. Returns node metadata and a matching content excerpt; blank queries return no results.
 - `POST /api/follow-ups` — create a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Ollama-generated assistant node, and connecting edges.
 - `GET /docs` — interactive FastAPI documentation when the backend is running.
 

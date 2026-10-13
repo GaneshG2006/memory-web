@@ -4,7 +4,7 @@ import os
 from uuid import uuid4
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -197,6 +197,62 @@ def get_graph(conversation_id: str, db: Session = Depends(get_db)):
     return {
         "nodes": [node_to_dict(node) for node in nodes],
         "edges": [edge_to_dict(edge) for edge in graph_edges],
+    }
+
+
+def build_search_excerpt(content: str, query: str, max_chars: int = 180) -> str:
+    match_index = content.lower().find(query.lower())
+    excerpt_length = max(max_chars, len(query))
+    if match_index < 0 or len(content) <= excerpt_length:
+        return content
+
+    context_before_match = min(60, (excerpt_length - len(query)) // 2)
+    start = max(0, match_index - context_before_match)
+    end = min(len(content), start + excerpt_length)
+    if end == len(content):
+        start = max(0, end - excerpt_length)
+    excerpt = content[start:end]
+    if start > 0:
+        excerpt = f"…{excerpt}"
+    if end < len(content):
+        excerpt = f"{excerpt}…"
+    return excerpt
+
+
+@app.get("/api/conversations/{conversation_id}/search")
+def search_conversation(
+    conversation_id: str,
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    query = q.strip()
+    if not query:
+        return {"results": []}
+
+    escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    nodes = db.scalars(
+        select(Node)
+        .where(
+            Node.conversation_id == conversation_id,
+            Node.kind.in_(["message", "topic"]),
+            Node.content.ilike(f"%{escaped_query}%", escape="\\"),
+        )
+        .order_by(Node.created_at, Node.id)
+    ).all()
+
+    return {
+        "results": [
+            {
+                "id": node.id,
+                "conversation_id": node.conversation_id,
+                "parent_id": node.parent_id,
+                "branch_id": node.branch_id,
+                "role": node.role,
+                "kind": node.kind,
+                "excerpt": build_search_excerpt(node.content, query),
+            }
+            for node in nodes
+        ]
     }
 
 

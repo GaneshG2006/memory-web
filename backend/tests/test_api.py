@@ -85,6 +85,108 @@ def test_demo_graph_has_nodes(client):
     assert {"welcome", "answer", "docker"}.issubset(node_ids)
 
 
+def test_search_matches_message_and_topic_content_case_insensitively(client):
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "dOcKeR"},
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert {result["id"] for result in results} == {"answer", "docker"}
+    answer = next(result for result in results if result["id"] == "answer")
+    topic = next(result for result in results if result["id"] == "docker")
+    assert answer["role"] == "assistant"
+    assert answer["kind"] == "message"
+    assert answer["conversation_id"] == "demo"
+    assert answer["parent_id"] == "welcome"
+    assert answer["branch_id"] == "main"
+    assert "Docker" in answer["excerpt"]
+    assert topic["role"] == "topic"
+    assert topic["kind"] == "topic"
+    assert "Docker:" in topic["excerpt"]
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+def test_search_empty_query_returns_no_results(client, query):
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": query},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+
+
+def test_search_with_no_matches_returns_empty_results(client):
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "no matching node content"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+
+
+def test_search_returns_match_centered_excerpt_for_long_content(client, test_engine):
+    content = f"{'x' * 240}distinctive search phrase{'y' * 240}"
+    with Session(test_engine) as db:
+        db.add(Message(
+            id="long-search-result",
+            conversation_id="demo",
+            parent_id="answer",
+            branch_id="main",
+            role="user",
+            content=content,
+            kind="message",
+        ))
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "DISTINCTIVE SEARCH PHRASE"},
+    )
+
+    assert response.status_code == 200
+    result = next(
+        item for item in response.json()["results"]
+        if item["id"] == "long-search-result"
+    )
+    assert len(result["excerpt"]) <= 182
+    assert result["excerpt"].startswith("…")
+    assert result["excerpt"].endswith("…")
+    assert "distinctive search phrase" in result["excerpt"]
+
+
+def test_search_excerpt_keeps_a_long_query_intact(client, test_engine):
+    query = f"distinctive {'search ' * 30}phrase"
+    content = f"{'x' * 240}{query}{'y' * 240}"
+    with Session(test_engine) as db:
+        db.add(Message(
+            id="long-query-result",
+            conversation_id="demo",
+            parent_id="answer",
+            branch_id="main",
+            role="user",
+            content=content,
+            kind="message",
+        ))
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": query},
+    )
+
+    assert response.status_code == 200
+    result = next(
+        item for item in response.json()["results"]
+        if item["id"] == "long-query-result"
+    )
+    assert query in result["excerpt"]
+    assert len(result["excerpt"]) <= len(query) + 2
+
+
 def test_follow_up_continue_relationship(client):
     response = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
