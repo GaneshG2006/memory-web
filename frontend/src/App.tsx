@@ -22,12 +22,11 @@ import {
   resolveSearchSelection,
   type SearchResult,
 } from './search'
+import { getApiUrl } from './api'
 import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
 type SearchResponse = { results: SearchResult[] }
-
-const API = 'http://127.0.0.1:8000'
 
 function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): Node[] {
   return items.map((item) => ({
@@ -120,7 +119,7 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/api/conversations/demo/graph`)
+      const response = await fetch(getApiUrl('/api/conversations/demo/graph'))
       if (!response.ok) {
         const errorMsg = await parseApiError(response)
         throw new Error(errorMsg)
@@ -174,7 +173,7 @@ export default function App() {
     setSearchBusy(true)
     try {
       const response = await fetch(
-        `${API}/api/conversations/demo/search?q=${encodeURIComponent(query)}`,
+        getApiUrl(`/api/conversations/demo/search?q=${encodeURIComponent(query)}`),
       )
       if (!response.ok) {
         throw new Error(await parseApiError(response))
@@ -236,7 +235,7 @@ export default function App() {
     if (!selectedNode || !prompt.trim()) return
     setBusy(true)
     try {
-      const response = await fetch(`${API}/api/follow-ups`, {
+      const response = await fetch(getApiUrl('/api/follow-ups'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
