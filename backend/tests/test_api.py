@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -105,6 +107,236 @@ def test_search_matches_message_and_topic_content_case_insensitively(client):
     assert topic["role"] == "topic"
     assert topic["kind"] == "topic"
     assert "Docker:" in topic["excerpt"]
+
+
+def test_search_prioritizes_exact_phrase_over_more_relevant_partial_match(client, test_engine):
+    created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        db.add_all([
+            Message(
+                id="partial-exact-rank",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankneedle something phraseanchor",
+                kind="message",
+                created_at=created_at,
+            ),
+            Message(
+                id="exact-phrase-rank",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankneedle phraseanchor",
+                kind="message",
+                created_at=created_at,
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "rankneedle phraseanchor"},
+    )
+
+    assert response.status_code == 200
+    ids = [result["id"] for result in response.json()["results"]]
+    assert ids[:2] == ["exact-phrase-rank", "partial-exact-rank"]
+
+
+def test_search_ranks_partial_matches_by_distinct_query_terms(client, test_engine):
+    with Session(test_engine) as db:
+        db.add_all([
+            Message(
+                id="partial-one-term",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankquartz appears",
+                kind="message",
+            ),
+            Message(
+                id="partial-three-terms",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankmaple then rankquartz and rankcedar",
+                kind="message",
+            ),
+            Message(
+                id="partial-two-terms",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankcedar with rankmaple",
+                kind="message",
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "rankquartz rankcedar rankmaple"},
+    )
+
+    assert response.status_code == 200
+    ids = [result["id"] for result in response.json()["results"]]
+    assert ids[:3] == [
+        "partial-three-terms",
+        "partial-two-terms",
+        "partial-one-term",
+    ]
+
+
+def test_search_orders_equal_rank_matches_by_created_at_then_id(client, test_engine):
+    earlier = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    later = datetime(2025, 1, 2, tzinfo=timezone.utc)
+    with Session(test_engine) as db:
+        db.add_all([
+            Message(
+                id="tie-z",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankcomet found",
+                kind="message",
+                created_at=earlier,
+            ),
+            Message(
+                id="tie-b",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankcomet found",
+                kind="message",
+                created_at=earlier,
+            ),
+            Message(
+                id="tie-a",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankcomet found",
+                kind="message",
+                created_at=earlier,
+            ),
+            Message(
+                id="tie-older",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankcomet found",
+                kind="message",
+                created_at=later,
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "rankcomet absent"},
+    )
+
+    assert response.status_code == 200
+    ids = [result["id"] for result in response.json()["results"]]
+    assert ids[:4] == ["tie-a", "tie-b", "tie-z", "tie-older"]
+
+
+def test_search_counts_repeated_query_terms_once(client, test_engine):
+    with Session(test_engine) as db:
+        db.add_all([
+            Message(
+                id="repeat-one-distinct-term",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankivy",
+                kind="message",
+            ),
+            Message(
+                id="repeat-two-distinct-terms",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="rankivy and rankcedar",
+                kind="message",
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": "rankivy rankivy rankcedar"},
+    )
+
+    assert response.status_code == 200
+    ids = [result["id"] for result in response.json()["results"]]
+    assert ids[:2] == ["repeat-two-distinct-terms", "repeat-one-distinct-term"]
+
+
+def test_search_treats_like_special_characters_literally(client, test_engine):
+    query = r"literal%_back\slash"
+    with Session(test_engine) as db:
+        db.add_all([
+            Message(
+                id="literal-special-match",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content=f"Contains {query} exactly",
+                kind="message",
+            ),
+            Message(
+                id="percent-wildcard-decoy",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content=r"literalx_back\slash",
+                kind="message",
+            ),
+            Message(
+                id="underscore-wildcard-decoy",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content=r"literal%Xback\slash",
+                kind="message",
+            ),
+            Message(
+                id="backslash-escape-decoy",
+                conversation_id="demo",
+                parent_id="answer",
+                branch_id="main",
+                role="user",
+                content="literal%_backslash",
+                kind="message",
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/api/conversations/demo/search",
+        params={"q": query},
+    )
+
+    assert response.status_code == 200
+    assert [result["id"] for result in response.json()["results"]] == [
+        "literal-special-match",
+    ]
 
 
 @pytest.mark.parametrize("query", ["", "   "])

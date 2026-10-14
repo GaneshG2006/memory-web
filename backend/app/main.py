@@ -7,7 +7,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -229,15 +229,36 @@ def search_conversation(
     if not query:
         return {"results": []}
 
-    escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    terms = list(dict.fromkeys(term.lower() for term in query.split()))
+
+    def escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    term_matches = [
+        Node.content.ilike(f"%{escape_like(term)}%", escape="\\")
+        for term in terms
+    ]
+    exact_phrase_match = Node.content.ilike(
+        f"%{escape_like(query)}%",
+        escape="\\",
+    )
+    term_match_count = sum(
+        case((term_match, 1), else_=0)
+        for term_match in term_matches
+    )
     nodes = db.scalars(
         select(Node)
         .where(
             Node.conversation_id == conversation_id,
             Node.kind.in_(["message", "topic"]),
-            Node.content.ilike(f"%{escaped_query}%", escape="\\"),
+            or_(*term_matches),
         )
-        .order_by(Node.created_at, Node.id)
+        .order_by(
+            case((exact_phrase_match, 0), else_=1),
+            term_match_count.desc(),
+            Node.created_at,
+            Node.id,
+        )
     ).all()
 
     return {

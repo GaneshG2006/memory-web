@@ -104,7 +104,7 @@ Set these variables in `backend\.env`. Defaults are used when an Ollama setting 
 
 - `GET /health` — API health status.
 - `GET /api/conversations/{conversation_id}/graph` — graph nodes and edges for a conversation; the current UI requests the seeded `demo` conversation.
-- `GET /api/conversations/{conversation_id}/search?q={query}` — case-insensitive substring search of message and topic content in the selected conversation. Returns node metadata and a matching content excerpt; blank queries return no results.
+- `GET /api/conversations/{conversation_id}/search?q={query}` — case-insensitive search of message and topic content in the selected conversation. Exact phrase matches rank first; other results match one or more distinct whitespace-separated query terms and rank by the number of terms found. Ties are ordered by creation time, then node ID. Returns node metadata and a matching content excerpt; blank queries return no results.
 - `POST /api/follow-ups` — create a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Ollama-generated assistant node, and connecting edges.
 - `GET /docs` — interactive FastAPI documentation when the backend is running.
 
