@@ -1,11 +1,13 @@
 import logging
 import math
 import os
+from secrets import compare_digest
 from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
@@ -24,12 +26,18 @@ DEFAULT_OLLAMA_TIMEOUT = 120.0
 MAX_CONTEXT_NODES = 32
 MAX_CONTEXT_CHARS = 12000
 
+basic_auth = HTTPBasic(auto_error=False)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://memory-web-cvn.pages.dev",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -38,6 +46,41 @@ class FollowUpRequest(BaseModel):
     parent_node_id: str
     mode: str = Field(pattern="^(continue|branch)$")
     prompt: str = Field(min_length=1, max_length=8000)
+
+
+def require_basic_auth(
+    credentials: HTTPBasicCredentials | None = Depends(basic_auth),
+) -> str:
+    expected_username = os.getenv("MEMORY_WEB_USERNAME")
+    expected_password = os.getenv("MEMORY_WEB_PASSWORD")
+    if not expected_username or not expected_password:
+        raise HTTPException(
+            status_code=503,
+            detail="API authentication is not configured",
+        )
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": 'Basic realm="Memory Web"'},
+        )
+
+    username_matches = compare_digest(
+        credentials.username.encode("utf-8"),
+        expected_username.encode("utf-8"),
+    )
+    password_matches = compare_digest(
+        credentials.password.encode("utf-8"),
+        expected_password.encode("utf-8"),
+    )
+    if not (username_matches and password_matches):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": 'Basic realm="Memory Web"'},
+        )
+    return credentials.username
 
 
 def node_to_dict(node: Node) -> dict:
@@ -174,7 +217,11 @@ def health():
 
 
 @app.get("/api/conversations/{conversation_id}/graph")
-def get_graph(conversation_id: str, db: Session = Depends(get_db)):
+def get_graph(
+    conversation_id: str,
+    _: str = Depends(require_basic_auth),
+    db: Session = Depends(get_db),
+):
     nodes = db.scalars(
         select(Node)
         .where(Node.conversation_id == conversation_id)
@@ -223,6 +270,7 @@ def build_search_excerpt(content: str, query: str, max_chars: int = 180) -> str:
 def search_conversation(
     conversation_id: str,
     q: str = Query(default=""),
+    _: str = Depends(require_basic_auth),
     db: Session = Depends(get_db),
 ):
     query = q.strip()
@@ -278,7 +326,11 @@ def search_conversation(
 
 
 @app.post("/api/follow-ups")
-def create_follow_up(body: FollowUpRequest, db: Session = Depends(get_db)):
+def create_follow_up(
+    body: FollowUpRequest,
+    _: str = Depends(require_basic_auth),
+    db: Session = Depends(get_db),
+):
     parent = db.get(Node, body.parent_node_id)
 
     if parent is None:

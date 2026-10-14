@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getApiUrl } from './api.ts'
+import { createBasicAuthHeader, getApiUrl } from './api.ts'
 
 test('API URL defaults to the local development server', () => {
   assert.equal(
@@ -27,5 +27,12 @@ test('blank API URL uses the local development server', () => {
   assert.equal(
     getApiUrl('/api/follow-ups', '  '),
     'http://127.0.0.1:8000/api/follow-ups',
+  )
+})
+
+test('Basic authorization header encodes the entered credentials', () => {
+  assert.equal(
+    createBasicAuthHeader({ username: 'demo-user', password: 'demo-password' }),
+    `Basic ${btoa('demo-user:demo-password')}`,
   )
 })

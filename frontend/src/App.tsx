@@ -22,11 +22,12 @@ import {
   resolveSearchSelection,
   type SearchResult,
 } from './search'
-import { getApiUrl } from './api'
+import { apiFetch, type ApiCredentials } from './api'
 import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
 type SearchResponse = { results: SearchResult[] }
+const AUTHENTICATION_ERROR = 'Authentication failed. Check the username and password, then try again.'
 
 function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): Node[] {
   return items.map((item) => ({
@@ -113,13 +114,39 @@ export default function App() {
   const [searchError, setSearchError] = useState('')
   const [searchBusy, setSearchBusy] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
-  const [status, setStatus] = useState('Connecting to local API…')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [credentials, setCredentials] = useState<ApiCredentials | null>(null)
+  const [authError, setAuthError] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [status, setStatus] = useState('Enter API credentials to connect.')
   const [busy, setBusy] = useState(false)
   const flowInstance = useRef<ReactFlowInstance | null>(null)
 
+  function handleUnauthorized() {
+    setCredentials(null)
+    setAllMessages([])
+    setNodes([])
+    setEdges([])
+    setSelected(null)
+    setSearchResults([])
+    setAuthError(AUTHENTICATION_ERROR)
+    setStatus('Authentication required.')
+  }
+
   const refresh = useCallback(async () => {
+    if (!credentials) {
+      setStatus('Enter API credentials to connect.')
+      return
+    }
+
+    setAuthBusy(true)
     try {
-      const response = await fetch(getApiUrl('/api/conversations/demo/graph'))
+      const response = await apiFetch('/api/conversations/demo/graph', credentials)
+      if (response.status === 401) {
+        handleUnauthorized()
+        return
+      }
       if (!response.ok) {
         const errorMsg = await parseApiError(response)
         throw new Error(errorMsg)
@@ -152,10 +179,22 @@ export default function App() {
             ? error.message
             : 'API offline · start FastAPI in the backend folder',
       )
+    } finally {
+      setAuthBusy(false)
     }
-  }, [setEdges, setNodes])
+  }, [credentials, setEdges, setNodes])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  function submitCredentials(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthError('')
+    if (!username || !password) {
+      setAuthError('Enter both a username and password.')
+      return
+    }
+    setCredentials({ username, password })
+  }
 
   const selectedNode = useMemo(
     () => selected ? allMessages.find((item) => item.id === selected.id) ?? selected : null,
@@ -172,9 +211,19 @@ export default function App() {
 
     setSearchBusy(true)
     try {
-      const response = await fetch(
-        getApiUrl(`/api/conversations/demo/search?q=${encodeURIComponent(query)}`),
+      if (!credentials) {
+        setSearchError('Enter API credentials to search.')
+        return
+      }
+      const response = await apiFetch(
+        `/api/conversations/demo/search?q=${encodeURIComponent(query)}`,
+        credentials,
       )
+      if (response.status === 401) {
+        handleUnauthorized()
+        setSearchError(AUTHENTICATION_ERROR)
+        return
+      }
       if (!response.ok) {
         throw new Error(await parseApiError(response))
       }
@@ -233,9 +282,13 @@ export default function App() {
 
   async function submitFollowUp() {
     if (!selectedNode || !prompt.trim()) return
+    if (!credentials) {
+      setAuthError('Enter API credentials to create a follow-up.')
+      return
+    }
     setBusy(true)
     try {
-      const response = await fetch(getApiUrl('/api/follow-ups'), {
+      const response = await apiFetch('/api/follow-ups', credentials, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -245,6 +298,10 @@ export default function App() {
           prompt: prompt.trim(),
         }),
       })
+      if (response.status === 401) {
+        handleUnauthorized()
+        return
+      }
       if (!response.ok) {
         const errorMsg = await parseApiError(response)
         throw new Error(errorMsg)
@@ -273,11 +330,34 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-icon"><Network size={20} /></span><div><strong>Memory Web</strong><small>Conversations, connected.</small></div></div>
-        <div className="top-actions"><span className="status-dot" />{status}<button className="ghost" onClick={() => void refresh()}>Refresh graph</button></div>
+        <div className="top-actions"><span className="status-dot" />{status}<button className="ghost" onClick={() => void refresh()} disabled={!credentials || authBusy}>Refresh graph</button></div>
       </header>
       <section className="workspace">
         <div className="graph-area">
           <div className="graph-heading"><div><h1>Your conversation web</h1><p>Select a node to inspect it or start a follow-up.</p></div><span className="demo-pill">DEMO DATA</span></div>
+          <form className="auth-form" onSubmit={submitCredentials}>
+            <label>
+              <span>API username</span>
+              <input
+                autoComplete="off"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>API password</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            <button className="search-button" type="submit" disabled={authBusy}>
+              {authBusy ? 'Connecting…' : 'Connect'}
+            </button>
+          </form>
+          {authError && <p className="search-message search-error" role="alert">{authError}</p>}
           <section className="conversation-search" aria-label="Search conversation">
             <form className="search-form" onSubmit={(event) => void submitSearch(event)}>
               <label className="search-input-wrap">
@@ -295,7 +375,7 @@ export default function App() {
                   aria-label="Search messages and topics"
                 />
               </label>
-              <button className="search-button" type="submit" disabled={searchBusy}>
+              <button className="search-button" type="submit" disabled={!credentials || searchBusy}>
                 {searchBusy ? 'Searching…' : 'Search'}
               </button>
             </form>
@@ -361,7 +441,7 @@ export default function App() {
                 <button className={mode === 'continue' ? 'mode active' : 'mode'} onClick={() => setMode('continue')}><Plus size={15} /> Continue</button>
               </div>
               <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask a follow-up about this node…" rows={4} />
-              <button className="primary" onClick={() => void submitFollowUp()} disabled={busy || !prompt.trim()}><Send size={15} />{busy ? 'Adding…' : 'Add follow-up'}</button>
+              <button className="primary" onClick={() => void submitFollowUp()} disabled={!credentials || busy || !prompt.trim()}><Send size={15} />{busy ? 'Adding…' : 'Add follow-up'}</button>
             </>
           ) : (
             <div className="empty-state"><Network size={28} /><strong>Select a node</strong><p>Click any message or topic in the graph to inspect it and start a follow-up.</p></div>

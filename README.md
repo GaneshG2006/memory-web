@@ -48,7 +48,7 @@ Copy-Item .env.example .env
 Set-Location ..
 ```
 
-Edit `backend\.env` locally and set `DATABASE_URL` to the PostgreSQL connection string for your environment. Keep `.env` private and do not paste its contents into documentation or commit it. The Ollama settings and their defaults are listed below. Apply the existing migrations from the project root:
+Edit `backend\.env` locally and set `DATABASE_URL` to the PostgreSQL connection string for your environment. Set `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` to credentials you choose for local API access. Use a unique password and keep `.env` private; protected API routes fail closed if either setting is missing. Do not paste these values into documentation or commit them. The Ollama settings and their defaults are listed below. Apply the existing migrations from the project root:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
@@ -97,15 +97,19 @@ Set these variables in `backend\.env`. Defaults are used when an Ollama setting 
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server base URL; the backend appends `/api/chat`. |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Local model name sent to Ollama. |
 | `OLLAMA_TIMEOUT` | `120` | Maximum request time in seconds; must be a positive number. |
+| `MEMORY_WEB_USERNAME` | Required | HTTP Basic username for graph, search, and follow-up API routes. |
+| `MEMORY_WEB_PASSWORD` | Required | HTTP Basic password. Keep it only in the backend environment; never use a `VITE_*` variable. |
 
 `DATABASE_URL` must point to the intended PostgreSQL database. Keep actual credentials in the untracked local `.env`; never put passwords, API secrets, or `.env` contents in this README.
 
+For production, configure `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` as private backend service environment variables (for example, in Render's environment settings). Use a unique strong password; do not place either value in Cloudflare Pages variables or source control. The frontend prompts for credentials and holds them only in memory until the page reloads. HTTP Basic credentials are only Base64-encoded, not encrypted, so use HTTPS for browser-to-API traffic. CORS allows the local Vite origins and `https://memory-web-cvn.pages.dev`; CORS is not a substitute for authentication.
+
 ## API
 
-- `GET /health` — API health status.
-- `GET /api/conversations/{conversation_id}/graph` — graph nodes and edges for a conversation; the current UI requests the seeded `demo` conversation.
-- `GET /api/conversations/{conversation_id}/search?q={query}` — case-insensitive search of message and topic content in the selected conversation. Exact phrase matches rank first; other results match one or more distinct whitespace-separated query terms and rank by the number of terms found. Ties are ordered by creation time, then node ID. Returns node metadata and a matching content excerpt; blank queries return no results.
-- `POST /api/follow-ups` — create a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Ollama-generated assistant node, and connecting edges.
+- `GET /health` — public API health status; it returns only service status.
+- `GET /api/conversations/{conversation_id}/graph` — HTTP Basic-authenticated graph nodes and edges for a conversation; the current UI requests the seeded `demo` conversation.
+- `GET /api/conversations/{conversation_id}/search?q={query}` — HTTP Basic-authenticated, case-insensitive search of message and topic content in the selected conversation. Exact phrase matches rank first; other results match one or more distinct whitespace-separated query terms and rank by the number of terms found. Ties are ordered by creation time, then node ID. Returns node metadata and a matching content excerpt; blank queries return no results.
+- `POST /api/follow-ups` — HTTP Basic-authenticated creation of a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Ollama-generated assistant node, and connecting edges.
 - `GET /docs` — interactive FastAPI documentation when the backend is running.
 
 ## Tests and build
@@ -136,7 +140,7 @@ Backend tests mock Ollama; they do not require the Ollama service or model to be
 
 **Current limitations**
 
-- This is a local prototype, not a production-ready or deployed service. Authentication and user accounts are not implemented.
+- This is a local prototype, not a production-ready or deployed service. HTTP Basic provides one shared backend credential, not user accounts or per-user authorization.
 - The UI currently loads the seeded `demo` conversation; it does not provide conversation creation or selection.
 - Demo topics are seeded rather than extracted automatically.
 - Assistant generation is a synchronous local HTTP request. The UI waits for it to complete; streaming responses are not implemented.
@@ -151,4 +155,4 @@ Backend tests mock Ollama; they do not require the Ollama service or model to be
 
 ## Security and project status
 
-Do not commit `.env` files, database credentials, or API keys. No AI API keys are needed for the current local Ollama integration. Before any hosted deployment, replace development database credentials, add authentication and secure secret management, and restrict network access.
+Do not commit `.env` files, database credentials, API credentials, or API keys. No AI API keys are needed for the current local Ollama integration. Before any hosted deployment, replace development database credentials, configure strong HTTP Basic credentials through the backend's secure environment settings, and restrict network access. HTTP Basic is a single shared credential and is not suitable for multi-user data isolation.

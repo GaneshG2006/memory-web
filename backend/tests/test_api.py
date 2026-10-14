@@ -1,16 +1,53 @@
+import base64
 from datetime import datetime, timezone
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import MAX_CONTEXT_CHARS, MAX_CONTEXT_NODES, app, build_ollama_messages
-from app.models import Message, Node
+from app.models import GraphEdge, Message, Node
 from app.seed import reset_demo_store
+
+TEST_USERNAME = "memory-web-test-user"
+TEST_PASSWORD = "memory-web-test-password"
+
+
+def basic_auth_header(username=TEST_USERNAME, password=TEST_PASSWORD):
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
+PROTECTED_ENDPOINTS = [
+    ("GET", "/api/conversations/demo/graph"),
+    ("GET", "/api/conversations/demo/search"),
+    (
+        "POST",
+        "/api/follow-ups",
+    ),
+]
+
+
+def request_protected_endpoint(client, method, path, headers=None):
+    if path.endswith("/search"):
+        return client.request(method, path, params={"q": "docker"}, headers=headers)
+    if method == "POST":
+        return client.request(
+            method,
+            path,
+            json={
+                "conversation_id": "demo",
+                "parent_node_id": "answer",
+                "mode": "continue",
+                "prompt": "Authenticated request test",
+            },
+            headers=headers,
+        )
+    return client.request(method, path, headers=headers)
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +83,9 @@ def test_engine():
 
 @pytest.fixture()
 def client(test_engine, monkeypatch):
+    monkeypatch.setenv("MEMORY_WEB_USERNAME", TEST_USERNAME)
+    monkeypatch.setenv("MEMORY_WEB_PASSWORD", TEST_PASSWORD)
+
     TestingSessionLocal = sessionmaker(
         autocommit=False,
         autoflush=False,
@@ -66,7 +106,7 @@ def client(test_engine, monkeypatch):
     with TestingSessionLocal() as db:
         reset_demo_store(db)
 
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Authorization": basic_auth_header()}) as test_client:
         yield test_client
 
     app.dependency_overrides.clear()
@@ -76,6 +116,104 @@ def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED_ENDPOINTS)
+def test_protected_endpoints_reject_missing_credentials(client, method, path):
+    client.headers.pop("Authorization")
+    response = request_protected_endpoint(client, method, path)
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Basic")
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED_ENDPOINTS)
+def test_protected_endpoints_reject_invalid_credentials(client, method, path):
+    response = request_protected_endpoint(
+        client,
+        method,
+        path,
+        headers={"Authorization": basic_auth_header(TEST_USERNAME, "wrong-password")},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Basic")
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED_ENDPOINTS)
+def test_protected_endpoints_accept_valid_credentials(client, method, path):
+    response = request_protected_endpoint(client, method, path)
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED_ENDPOINTS)
+def test_protected_endpoints_fail_closed_without_server_credentials(
+    client,
+    monkeypatch,
+    method,
+    path,
+):
+    monkeypatch.delenv("MEMORY_WEB_USERNAME")
+    monkeypatch.delenv("MEMORY_WEB_PASSWORD")
+
+    response = request_protected_endpoint(client, method, path)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "API authentication is not configured"
+
+
+@pytest.mark.parametrize("invalid_credentials", [False, True])
+def test_rejected_follow_up_does_not_call_ollama_or_write_records(
+    client,
+    test_engine,
+    mock_ollama,
+    invalid_credentials,
+):
+    headers = None
+    if invalid_credentials:
+        headers = {
+            "Authorization": basic_auth_header(TEST_USERNAME, "wrong-password"),
+        }
+    else:
+        client.headers.pop("Authorization")
+    with Session(test_engine) as db:
+        before_nodes = db.scalar(select(func.count()).select_from(Node))
+        before_edges = db.scalar(select(func.count()).select_from(GraphEdge))
+
+    response = request_protected_endpoint(
+        client,
+        "POST",
+        "/api/follow-ups",
+        headers=headers,
+    )
+
+    with Session(test_engine) as db:
+        after_nodes = db.scalar(select(func.count()).select_from(Node))
+        after_edges = db.scalar(select(func.count()).select_from(GraphEdge))
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Basic")
+    assert mock_ollama == []
+    assert after_nodes == before_nodes
+    assert after_edges == before_edges
+
+
+def test_cors_allows_pages_origin_and_authorization_header(client):
+    response = client.options(
+        "/api/conversations/demo/graph",
+        headers={
+            "Origin": "https://memory-web-cvn.pages.dev",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "https://memory-web-cvn.pages.dev"
+    )
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 
 def test_demo_graph_has_nodes(client):
