@@ -22,12 +22,19 @@ import {
   resolveSearchSelection,
   type SearchResult,
 } from './search'
-import { apiFetch, type ApiCredentials } from './api'
+import {
+  apiFetch,
+  getFollowUpRequestErrorMessage,
+  parseApiError,
+  parseFollowUpResponse,
+  type ApiCredentials,
+} from './api'
 import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
 type SearchResponse = { results: SearchResult[] }
 const AUTHENTICATION_ERROR = 'Authentication failed. Check the username and password, then try again.'
+const FOLLOW_UP_REQUEST_TIMEOUT_MS = 130_000
 
 function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): Node[] {
   return items.map((item) => ({
@@ -52,56 +59,6 @@ function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): 
   }))
 }
 
-async function parseApiError(response: Response): Promise<string> {
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    try {
-      const data = await response.json()
-      if (typeof data?.detail === 'string') {
-        return data.detail
-      }
-      if (Array.isArray(data?.detail)) {
-        const errorStrings = data.detail.map((err: unknown) => {
-          if (typeof err === 'string') return err
-          if (err && typeof err === 'object') {
-            const errorObj = err as { loc?: unknown[]; msg?: unknown }
-            const loc = Array.isArray(errorObj.loc)
-              ? errorObj.loc.filter((segment) => segment !== 'body').join('.')
-              : ''
-            const msg = typeof errorObj.msg === 'string' ? errorObj.msg : JSON.stringify(err)
-            return loc ? `${loc}: ${msg}` : msg
-          }
-          return String(err)
-        })
-        if (errorStrings.length > 0) {
-          return errorStrings.join('; ')
-        }
-      }
-      if (typeof data?.message === 'string') {
-        return data.message
-      }
-      if (typeof data?.error === 'string') {
-        return data.error
-      }
-    } catch {
-      // JSON parsing failed despite header
-    }
-  } else {
-    try {
-      const text = await response.text()
-      if (text && text.trim().length > 0) {
-        const stripped = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-        if (stripped.length > 0) {
-          return stripped.length > 120 ? `${stripped.slice(0, 117)}...` : stripped
-        }
-      }
-    } catch {
-      // Reading text body failed
-    }
-  }
-  return `Error ${response.status}: ${response.statusText || 'Request failed'}`
-}
-
 export default function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -121,6 +78,7 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false)
   const [status, setStatus] = useState('Enter API credentials to connect.')
   const [busy, setBusy] = useState(false)
+  const [followUpError, setFollowUpError] = useState('')
   const flowInstance = useRef<ReactFlowInstance | null>(null)
 
   function handleUnauthorized() {
@@ -248,6 +206,7 @@ export default function App() {
       return
     }
 
+    setFollowUpError('')
     setSelected(selection.node)
     setNodes((current) => current.map((node) => ({
       ...node,
@@ -286,11 +245,18 @@ export default function App() {
       setAuthError('Enter API credentials to create a follow-up.')
       return
     }
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      FOLLOW_UP_REQUEST_TIMEOUT_MS,
+    )
+    setFollowUpError('')
     setBusy(true)
     try {
       const response = await apiFetch('/api/follow-ups', credentials, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           conversation_id: 'demo',
           parent_node_id: selectedNode.id,
@@ -302,16 +268,10 @@ export default function App() {
         handleUnauthorized()
         return
       }
-      if (!response.ok) {
-        const errorMsg = await parseApiError(response)
-        throw new Error(errorMsg)
-      }
-      let result: { created_nodes?: ApiNode[]; created_edges?: unknown[] }
-      try {
-        result = await response.json()
-      } catch {
-        throw new Error('Received invalid JSON from API')
-      }
+      const result = await parseFollowUpResponse<{
+        created_nodes?: ApiNode[]
+        created_edges?: unknown[]
+      }>(response)
       setPrompt('')
       await refresh()
       const assistantNode = result.created_nodes?.find((item) => item.role === 'assistant')
@@ -320,8 +280,11 @@ export default function App() {
       }
       setStatus(`Follow-up added · ${mode} mode · AI response`)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Could not create follow-up')
+      const errorMessage = getFollowUpRequestErrorMessage(error)
+      setFollowUpError(errorMessage)
+      setStatus(errorMessage)
     } finally {
+      window.clearTimeout(timeoutId)
       setBusy(false)
     }
   }
@@ -414,9 +377,15 @@ export default function App() {
               onInit={(instance) => { flowInstance.current = instance }}
               onNodeClick={(_, node) => {
                 const item = allMessages.find((message) => message.id === node.id)
-                if (item) setSelected(item)
+                if (item) {
+                  setSelected(item)
+                  setFollowUpError('')
+                }
               }}
-              onPaneClick={() => setSelected(null)}
+              onPaneClick={() => {
+                setSelected(null)
+                setFollowUpError('')
+              }}
               fitView
               fitViewOptions={{ padding: 0.22 }}
             >
@@ -440,8 +409,12 @@ export default function App() {
                 <button className={mode === 'branch' ? 'mode active' : 'mode'} onClick={() => setMode('branch')}><GitBranch size={15} /> Branch</button>
                 <button className={mode === 'continue' ? 'mode active' : 'mode'} onClick={() => setMode('continue')}><Plus size={15} /> Continue</button>
               </div>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask a follow-up about this node…" rows={4} />
+              <textarea value={prompt} onChange={(event) => {
+                setPrompt(event.target.value)
+                setFollowUpError('')
+              }} placeholder="Ask a follow-up about this node…" rows={4} />
               <button className="primary" onClick={() => void submitFollowUp()} disabled={!credentials || busy || !prompt.trim()}><Send size={15} />{busy ? 'Adding…' : 'Add follow-up'}</button>
+              {followUpError && <p className="follow-up-error" role="alert">{followUpError}</p>}
             </>
           ) : (
             <div className="empty-state"><Network size={28} /><strong>Select a node</strong><p>Click any message or topic in the graph to inspect it and start a follow-up.</p></div>
