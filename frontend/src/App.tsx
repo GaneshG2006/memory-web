@@ -153,9 +153,9 @@ export default function App() {
       setEdges(graph.edges.map((edge) => ({
         id: edge.id, source: edge.source, target: edge.target,
         label: edge.type, animated: edge.type === 'branch',
-        style: { stroke: edge.type === 'branch' ? '#a78bfa' : '#707789', strokeWidth: 1.8 },
-        labelStyle: { fill: '#c3c7d3', fontSize: 10, fontWeight: 500 },
-        labelBgStyle: { fill: '#17181f', fillOpacity: 0.94 },
+        style: { stroke: edge.type === 'branch' ? '#A0A0A0' : '#707070', strokeWidth: 1.8 },
+        labelStyle: { fill: '#C3C3C3', fontSize: 10, fontWeight: 500 },
+        labelBgStyle: { fill: '#171717', fillOpacity: 0.94 },
         labelBgPadding: [5, 3],
         labelBgBorderRadius: 5,
       })))
@@ -457,13 +457,13 @@ export default function App() {
               fitView
               fitViewOptions={{ padding: 0.22 }}
             >
-              <Background color="#343646" gap={24} size={1.1} />
+              <Background color="#292929" gap={24} size={1.1} />
               <Controls position="bottom-left" />
               {nodes.length > 0 && (
                 <MiniMap
                   position="bottom-right"
-                  nodeColor={(node) => node.data.kind === 'topic' ? '#a78bfa' : node.data.role === 'user' ? '#58c5d8' : '#8581ef'}
-                  maskColor="rgba(9,10,15,0.72)"
+                  nodeColor="#A0A0A0"
+                  maskColor="rgba(10, 10, 10, 0.72)"
                 />
               )}
             </ReactFlow>
