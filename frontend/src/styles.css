@@ -553,6 +553,7 @@ button {
 
 .conversation-node-title {
   overflow: hidden;
+  flex: 1 1 auto;
   color: #b5b5b5;
   font-size: 8px;
   font-weight: 750;
@@ -563,6 +564,51 @@ button {
   white-space: nowrap;
 }
 
+.conversation-node-copy {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #a9a9a9;
+  cursor: pointer;
+  font: inherit;
+  font-size: 8px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity .18s ease, background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+.react-flow__node:hover .conversation-node-copy,
+.react-flow__node.selected .conversation-node-copy,
+.conversation-node-copy:focus-visible {
+  opacity: 1;
+}
+
+.conversation-node-copy:hover,
+.conversation-node-copy:focus-visible {
+  border-color: #555555;
+  background: #303030;
+  color: #f0f0f0;
+  outline: none;
+}
+
+.conversation-node-copy.is-copied {
+  color: #e2e2e2;
+  opacity: 1;
+}
+
+.conversation-node-copy.is-failed {
+  color: #bcbcbc;
+  opacity: 1;
+}
+
 .conversation-node-card p {
   display: -webkit-box;
   overflow: hidden;
@@ -571,6 +617,7 @@ button {
   font-size: 10px;
   font-weight: 450;
   line-height: 1.5;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

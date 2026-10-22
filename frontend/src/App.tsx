@@ -6,7 +6,7 @@ import {
   useEdgesState, useNodesState,
 } from '@xyflow/react'
 import {
-  Bot, Brain, GitBranch, LayoutGrid, MessageSquare, Network, Plus,
+  Bot, Brain, Check, Copy, GitBranch, LayoutGrid, MessageSquare, Network, Plus,
   RotateCw, Search, Send, UserRound,
 } from 'lucide-react'
 import {
@@ -33,6 +33,7 @@ import {
   parseFollowUpResponse,
   type ApiCredentials,
 } from './api'
+import { copyTextToClipboard } from './clipboard'
 import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
@@ -44,13 +45,32 @@ type ConversationNodeData = {
   kind: string
   role: string
   content: string
+  preview: string
 }
 
 function ConversationNode({ data }: NodeProps<Node<ConversationNodeData>>) {
+  const [copyState, setCopyState] = useState<'copied' | 'failed' | null>(null)
+  const feedbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTopic = data.kind === 'topic'
   const variant = isTopic ? 'is-topic' : data.role === 'user' ? 'is-user' : data.role === 'assistant' ? 'is-assistant' : 'is-other'
   const title = isTopic ? 'TOPIC / MEMORY' : data.role.toUpperCase()
   const NodeIcon = isTopic ? Brain : data.role === 'user' ? UserRound : Bot
+
+  useEffect(() => () => {
+    if (feedbackTimeout.current) clearTimeout(feedbackTimeout.current)
+  }, [])
+
+  async function handleCopy() {
+    try {
+      await copyTextToClipboard(data.content)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+
+    if (feedbackTimeout.current) clearTimeout(feedbackTimeout.current)
+    feedbackTimeout.current = setTimeout(() => setCopyState(null), 1800)
+  }
 
   return (
     <>
@@ -59,8 +79,24 @@ function ConversationNode({ data }: NodeProps<Node<ConversationNodeData>>) {
         <header className="conversation-node-header">
           <span className="conversation-node-icon"><NodeIcon size={12} /></span>
           <span className="conversation-node-title">{title}</span>
+          <button
+            type="button"
+            className={`conversation-node-copy nodrag nopan${copyState ? ` is-${copyState}` : ''}`}
+            aria-label={copyState === 'copied' ? 'Message copied' : copyState === 'failed' ? 'Copy failed' : 'Copy message'}
+            title={copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy message'}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              void handleCopy()
+            }}
+          >
+            {copyState === 'copied' ? <Check size={11} /> : <Copy size={11} />}
+            {copyState && <span>{copyState === 'copied' ? 'Copied' : 'Copy failed'}</span>}
+          </button>
         </header>
-        <p>{data.content}</p>
+        <p>{data.preview}</p>
       </article>
       <Handle type="source" position={FlowPosition.Right} className="conversation-node-handle" />
     </>
@@ -77,7 +113,8 @@ function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): 
     data: {
       kind: item.kind,
       role: item.role,
-      content: `${item.content.slice(0, 82)}${item.content.length > 82 ? '…' : ''}`,
+      content: item.content,
+      preview: `${item.content.slice(0, 82)}${item.content.length > 82 ? '…' : ''}`,
     },
     style: {
       width: 235,
