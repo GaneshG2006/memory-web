@@ -12,11 +12,13 @@ Memory Web is a local prototype for exploring conversations as connected message
 
 The frontend currently loads the seeded `demo` conversation from the API at `http://127.0.0.1:8000`. Node positions are stored in browser session storage. The graph layout is deterministic for reordered API data, separates branches into lanes, and avoids collisions when positioning new nodes.
 
-## Implemented
+## Key Features
 
 - Interactive conversation graph with message and topic nodes, node inspection, and draggable positions.
 - Case-insensitive search across message and topic content in the current conversation, with results that focus the matching graph node.
 - Continue and Branch follow-ups saved as graph nodes and edges.
+- Conversation records, message/topic nodes, and graph edges are stored in PostgreSQL and loaded again from the graph API.
+- Copy the full content of a message or topic directly from its conversation node.
 - Local assistant response generation through Ollama using Qwen2.5 7B.
 - Context assembly from the selected node's ancestry in chronological order. Sibling branches and unrelated conversations are excluded; topic nodes are sent as supporting context. Context is bounded to at most 32 ancestry nodes and 12,000 characters.
 - Ollama URL, model, and request timeout configuration through environment variables.
