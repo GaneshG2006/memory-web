@@ -119,7 +119,9 @@ For production, configure `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` as pri
 From the project root, run backend API tests:
 
 ```powershell
-.\backend\.venv\Scripts\python.exe -m pytest backend\tests -q
+Set-Location .\backend
+.\.venv\Scripts\python.exe -m pytest tests -q
+Set-Location ..
 ```
 
 Run frontend graph-layout tests and build the production bundle:
