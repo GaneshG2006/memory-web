@@ -1,5 +1,7 @@
 # Memory Web
 
+[![GitHub Actions CI status](https://github.com/GaneshG2006/memory-web/actions/workflows/ci.yml/badge.svg)](https://github.com/GaneshG2006/memory-web/actions/workflows/ci.yml)
+
 Memory Web is a local prototype for exploring conversations as connected message and topic nodes rather than as a single transcript. Select a node to inspect it, then continue the conversation or create a branch from that point. The backend stores the graph and conversation messages; a local Ollama model generates assistant replies.
 
 ## Architecture
