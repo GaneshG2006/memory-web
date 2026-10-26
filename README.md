@@ -2,15 +2,15 @@
 
 [![GitHub Actions CI status](https://github.com/GaneshG2006/memory-web/actions/workflows/ci.yml/badge.svg)](https://github.com/GaneshG2006/memory-web/actions/workflows/ci.yml)
 
-Memory Web is a local prototype for exploring conversations as connected message and topic nodes rather than as a single transcript. Select a node to inspect it, then continue the conversation or create a branch from that point. The backend stores the graph and conversation messages; a local Ollama model generates assistant replies.
+Memory Web is a local prototype for exploring conversations as connected message and topic nodes rather than as a single transcript. Select a node to inspect it, then continue the conversation or create a branch from that point. The backend stores the graph and conversation messages; the Google Gemini API generates assistant replies.
 
 ## Architecture
 
 - **Frontend:** React and TypeScript, bundled and served for development with Vite. React Flow (`@xyflow/react`) renders the conversation graph.
 - **Backend:** FastAPI exposes the JSON API. SQLAlchemy maps conversations, nodes, and graph edges; Alembic manages PostgreSQL schema migrations.
 - **Database:** PostgreSQL stores saved conversations, message/topic nodes, and graph edges.
-- **Local AI:** Ollama serves `qwen2.5:7b` over its local HTTP API. The backend uses `httpx` to send non-streaming chat requests; no cloud AI provider or API key is used.
-- **Tests:** Backend API tests use an isolated SQLite database and mock Ollama HTTP responses. Frontend graph-layout tests use Node's test runner.
+- **AI:** The backend uses Google's official Python GenAI SDK and async Gemini API requests. The default model is `gemini-3.5-flash-lite`; configure an API key only in the backend environment.
+- **Tests:** Backend API tests use an isolated SQLite database and mock Gemini SDK responses; tests make no real API calls. Frontend graph-layout tests use Node's test runner.
 
 The frontend currently loads the seeded `demo` conversation from the API at `http://127.0.0.1:8000`. Node positions are stored in browser session storage. The graph layout is deterministic for reordered API data, separates branches into lanes, and avoids collisions when positioning new nodes.
 
@@ -21,16 +21,16 @@ The frontend currently loads the seeded `demo` conversation from the API at `htt
 - Continue and Branch follow-ups saved as graph nodes and edges.
 - Conversation records, message/topic nodes, and graph edges are stored in PostgreSQL and loaded again from the graph API.
 - Copy the full content of a message or topic directly from its conversation node.
-- Local assistant response generation through Ollama using Qwen2.5 7B.
+- Assistant response generation through the Google Gemini API.
 - Context assembly from the selected node's ancestry in chronological order. Sibling branches and unrelated conversations are excluded; topic nodes are sent as supporting context. Context is bounded to at most 32 ancestry nodes and 12,000 characters.
-- Ollama URL, model, and request timeout configuration through environment variables.
-- Explicit API errors for unavailable/timed-out Ollama requests and invalid/empty model responses. Failed generation does not save partial follow-up nodes or edges.
+- Gemini model and request timeout configuration through environment variables. Gemini free-tier limits are finite and can change; follow-ups may be rate-limited or unavailable after quota is exhausted.
+- Explicit API errors for Gemini quota/rate limits, authentication failures, timeouts, upstream errors, and invalid/empty model responses. Failed generation does not save partial follow-up nodes or edges.
 - Health and graph endpoints, request validation, idempotent demo data seeding, and saved graph data using the existing PostgreSQL schema.
 - Automated backend API and frontend tests.
 
 ## Windows local development
 
-Prerequisites: Git, Python 3.11 or newer, Node.js with npm, Docker Desktop with Docker Compose, and Ollama for Windows.
+Prerequisites: Git, Python 3.11 or newer, Node.js with npm, Docker Desktop with Docker Compose, and a Gemini API key from Google AI Studio.
 
 Run the following commands in PowerShell from the project root unless a step says otherwise.
 
@@ -52,24 +52,13 @@ Copy-Item .env.example .env
 Set-Location ..
 ```
 
-Edit `backend\.env` locally and set `DATABASE_URL` to the PostgreSQL connection string for your environment. Set `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` to credentials you choose for local API access. Use a unique password and keep `.env` private; protected API routes fail closed if either setting is missing. Do not paste these values into documentation or commit them. The Ollama settings and their defaults are listed below. Apply the existing migrations from the project root:
+Edit `backend\.env` locally and set `DATABASE_URL` to the PostgreSQL connection string for your environment. Set `GEMINI_API_KEY` to a key created in [Google AI Studio](https://aistudio.google.com/apikey), and set `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` to credentials you choose for local API access. Keep `.env` private; protected API routes fail closed if credentials are missing. Do not paste these values into documentation or commit them. The Gemini settings and their defaults are listed below. Apply the existing migrations from the project root:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
-### 3. Prepare Ollama
-
-Ensure Ollama is running, then download the configured model if it is not already installed:
-
-```powershell
-ollama pull qwen2.5:7b
-ollama list
-```
-
-The API calls Ollama locally at `http://127.0.0.1:11434/api/chat` by default. No API key or cloud account is required.
-
-### 4. Start the backend
+### 3. Start the backend
 
 In a PowerShell window:
 
@@ -80,7 +69,7 @@ Set-Location .\backend
 
 The API listens at `http://127.0.0.1:8000`; interactive API documentation is at `http://127.0.0.1:8000/docs`.
 
-### 5. Start the frontend
+### 4. Start the frontend
 
 In a separate PowerShell window:
 
@@ -94,13 +83,13 @@ Open the Vite URL printed in the terminal, normally `http://localhost:5173`.
 
 ## Environment configuration
 
-Set these variables in `backend\.env`. Defaults are used when an Ollama setting is omitted:
+Set these variables in `backend\.env`. The default Gemini model is `gemini-3.5-flash-lite`; check Google's current [model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite) and [pricing and free-tier details](https://ai.google.dev/gemini-api/docs/pricing) before selecting a model. Free-tier quotas are limited, are subject to change, and are not unlimited.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server base URL; the backend appends `/api/chat`. |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Local model name sent to Ollama. |
-| `OLLAMA_TIMEOUT` | `120` | Maximum request time in seconds; must be a positive number. |
+| `GEMINI_API_KEY` | Required | Google Gemini API key. Keep it in the backend environment only; never expose it through frontend variables or responses. |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model identifier sent by the backend. |
+| `GEMINI_TIMEOUT` | `60` | Maximum API request time in seconds; must be a positive number. |
 | `MEMORY_WEB_USERNAME` | Required | HTTP Basic username for graph, search, and follow-up API routes. |
 | `MEMORY_WEB_PASSWORD` | Required | HTTP Basic password. Keep it only in the backend environment; never use a `VITE_*` variable. |
 
@@ -113,7 +102,7 @@ For production, configure `MEMORY_WEB_USERNAME` and `MEMORY_WEB_PASSWORD` as pri
 - `GET /health` — public API health status; it returns only service status.
 - `GET /api/conversations/{conversation_id}/graph` — HTTP Basic-authenticated graph nodes and edges for a conversation; the current UI requests the seeded `demo` conversation.
 - `GET /api/conversations/{conversation_id}/search?q={query}` — HTTP Basic-authenticated, case-insensitive search of message and topic content in the selected conversation. Exact phrase matches rank first; other results match one or more distinct whitespace-separated query terms and rank by the number of terms found. Ties are ordered by creation time, then node ID. Returns node metadata and a matching content excerpt; blank queries return no results.
-- `POST /api/follow-ups` — HTTP Basic-authenticated creation of a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Ollama-generated assistant node, and connecting edges.
+- `POST /api/follow-ups` — HTTP Basic-authenticated creation of a follow-up from a parent node. JSON body fields: `conversation_id`, `parent_node_id`, `mode` (`continue` or `branch`), and `prompt`. Returns the created user node, Gemini-generated assistant node, and connecting edges.
 - `GET /docs` — interactive FastAPI documentation when the backend is running.
 
 ## Tests and build
@@ -140,7 +129,7 @@ The frontend test TypeScript project can also be checked directly:
 npx.cmd tsc --project tsconfig.test.json
 ```
 
-Backend tests mock Ollama; they do not require the Ollama service or model to be running.
+Backend tests mock Gemini; they do not require an API key, Gemini account, network access, or real API calls.
 
 ## Limitations and planned improvements
 
@@ -149,7 +138,7 @@ Backend tests mock Ollama; they do not require the Ollama service or model to be
 - This is a local prototype, not a production-ready or deployed service. HTTP Basic provides one shared backend credential, not user accounts or per-user authorization.
 - The UI currently loads the seeded `demo` conversation; it does not provide conversation creation or selection.
 - Demo topics are seeded rather than extracted automatically.
-- Assistant generation is a synchronous local HTTP request. The UI waits for it to complete; streaming responses are not implemented.
+- Assistant generation awaits a Gemini API request. The UI waits for it to complete; streaming responses are not implemented.
 - Context is deliberately bounded, so very long ancestry histories are truncated.
 - The Compose database credentials are development-only. The application has not been hardened for public network access or multi-user hosting.
 
@@ -161,4 +150,4 @@ Backend tests mock Ollama; they do not require the Ollama service or model to be
 
 ## Security and project status
 
-Do not commit `.env` files, database credentials, API credentials, or API keys. No AI API keys are needed for the current local Ollama integration. Before any hosted deployment, replace development database credentials, configure strong HTTP Basic credentials through the backend's secure environment settings, and restrict network access. HTTP Basic is a single shared credential and is not suitable for multi-user data isolation.
+Do not commit `.env` files, database credentials, API credentials, or API keys. Never send `GEMINI_API_KEY` to the frontend or include it in logs or responses. Gemini free-tier access is subject to model availability and per-project quotas; Google AI Plus does not imply unlimited Gemini API usage. Before any hosted deployment, replace development database credentials, configure strong HTTP Basic credentials through the backend's secure environment settings, and restrict network access. HTTP Basic is a single shared credential and is not suitable for multi-user data isolation.

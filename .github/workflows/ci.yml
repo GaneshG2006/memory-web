@@ -45,7 +45,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: sqlite:///./ci.db
-      OLLAMA_BASE_URL: http://127.0.0.1:11434
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

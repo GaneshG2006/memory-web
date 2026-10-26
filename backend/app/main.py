@@ -5,6 +5,8 @@ from secrets import compare_digest
 from uuid import uuid4
 
 import httpx
+from google import genai
+from google.genai import errors, types
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -20,9 +22,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Memory Web API", version="0.2.0")
 
-DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
-DEFAULT_OLLAMA_TIMEOUT = 120.0
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GEMINI_TIMEOUT = 60.0
 MAX_CONTEXT_NODES = 32
 MAX_CONTEXT_CHARS = 12000
 
@@ -104,7 +105,11 @@ def edge_to_dict(edge: GraphEdge) -> dict:
     }
 
 
-def build_ollama_messages(db: Session, parent: Node, prompt: str) -> list[dict[str, str]]:
+def build_follow_up_messages(
+    db: Session,
+    parent: Node,
+    prompt: str,
+) -> list[dict[str, str]]:
     ancestry: list[Node] = []
     seen_ids: set[str] = set()
     current: Node | None = parent
@@ -148,56 +153,93 @@ def build_ollama_messages(db: Session, parent: Node, prompt: str) -> list[dict[s
     return messages
 
 
-def generate_assistant_response(messages: list[dict[str, str]]) -> str:
-    base_url = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip()
-    try:
-        timeout = float(os.getenv("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail="OLLAMA_TIMEOUT must be a number") from exc
-
-    if not base_url or not model or not math.isfinite(timeout) or timeout <= 0:
-        raise HTTPException(
-            status_code=500,
-            detail="OLLAMA_BASE_URL, OLLAMA_MODEL, and OLLAMA_TIMEOUT must be valid",
-        )
-
-    try:
-        response = httpx.post(
-            f"{base_url}/api/chat",
-            json={"model": model, "messages": messages, "stream": False},
-            timeout=timeout,
-        )
-    except (httpx.TimeoutException, httpx.RequestError) as exc:
-        logger.warning("Ollama request failed: %s", type(exc).__name__)
+async def generate_assistant_response(messages: list[dict[str, str]]) -> str:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
         raise HTTPException(
             status_code=503,
-            detail="Ollama is unavailable or the request timed out",
-        ) from exc
+            detail="Gemini API is not configured. Set GEMINI_API_KEY in the backend environment.",
+        )
 
+    model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
     try:
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        logger.warning("Ollama returned HTTP status %s", exc.response.status_code)
-        raise HTTPException(
-            status_code=502,
-            detail="Ollama returned an error response",
-        ) from exc
+        timeout = float(os.getenv("GEMINI_TIMEOUT", str(DEFAULT_GEMINI_TIMEOUT)))
     except ValueError as exc:
-        logger.warning("Ollama returned invalid JSON")
-        raise HTTPException(
-            status_code=502,
-            detail="Ollama returned an invalid response",
-        ) from exc
+        raise HTTPException(status_code=500, detail="GEMINI_TIMEOUT must be a number") from exc
 
-    message = payload.get("message") if isinstance(payload, dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str) or not content.strip():
-        logger.warning("Ollama response did not contain assistant content")
+    if not model or not math.isfinite(timeout) or timeout <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_MODEL and GEMINI_TIMEOUT must be valid",
+        )
+
+    system_instruction = messages[0]["content"]
+    contents = [
+        types.Content(
+            role="model" if message["role"] == "assistant" else "user",
+            parts=[types.Part.from_text(text=message["content"])],
+        )
+        for message in messages[1:]
+    ]
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(timeout * 1000)),
+    )
+    try:
+        response = await client.aio.models.generate_content(
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(system_instruction=system_instruction),
+        )
+    except (httpx.TimeoutException, TimeoutError) as exc:
+        logger.warning("Gemini API request timed out")
+        raise HTTPException(
+            status_code=504,
+            detail="Gemini API request timed out. Please try again.",
+        ) from exc
+    except httpx.RequestError as exc:
+        logger.warning("Gemini API transport failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=502,
-            detail="Ollama returned an empty or invalid assistant response",
+            detail="Gemini API could not complete the request. Please try again.",
+        ) from exc
+    except errors.APIError as exc:
+        logger.warning("Gemini API returned status %s", exc.code)
+        if exc.code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Gemini API quota or rate limit reached. Please retry later or "
+                    "review the project's free-tier limits."
+                ),
+            ) from exc
+        if exc.code in {401, 403}:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Gemini API authentication failed. Check the backend "
+                    "GEMINI_API_KEY configuration."
+                ),
+            ) from exc
+        if exc.code in {408, 504}:
+            raise HTTPException(
+                status_code=504,
+                detail="Gemini API request timed out. Please try again.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini API returned an error. Please try again later.",
+        ) from exc
+    finally:
+        await client.aio.aclose()
+
+    content = response.text
+    if not isinstance(content, str) or not content.strip():
+        logger.warning("Gemini API response did not contain assistant content")
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini API returned an empty or invalid assistant response.",
         )
     return content.strip()
 
@@ -326,7 +368,7 @@ def search_conversation(
 
 
 @app.post("/api/follow-ups")
-def create_follow_up(
+async def create_follow_up(
     body: FollowUpRequest,
     _: str = Depends(require_basic_auth),
     db: Session = Depends(get_db),
@@ -355,8 +397,8 @@ def create_follow_up(
 
     parent_branch = parent.branch_id or "main"
     branch_id = str(uuid4()) if body.mode == "branch" else parent_branch
-    context_messages = build_ollama_messages(db, parent, stripped_prompt)
-    answer_content = generate_assistant_response(context_messages)
+    context_messages = build_follow_up_messages(db, parent, stripped_prompt)
+    answer_content = await generate_assistant_response(context_messages)
 
     user_node = Message(
         id=str(uuid4()),

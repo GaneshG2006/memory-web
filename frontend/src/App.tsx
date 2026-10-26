@@ -533,7 +533,7 @@ export default function App() {
               </div>
               <div className="divider" />
               <div className="follow-up-heading"><h3>Follow-up</h3><span>AI RESPONSE</span></div>
-              <p className="hint">Your question uses this node's conversation ancestry as context. Ollama generates the response locally.</p>
+              <p className="hint">Your question uses this node's conversation ancestry as context. Gemini generates the response.</p>
               <div className="mode-switch">
                 <button className={mode === 'branch' ? 'mode active' : 'mode'} onClick={() => setMode('branch')}><GitBranch size={15} /> Branch</button>
                 <button className={mode === 'continue' ? 'mode active' : 'mode'} onClick={() => setMode('continue')}><Plus size={15} /> Continue</button>

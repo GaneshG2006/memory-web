@@ -43,9 +43,9 @@ test('Basic authorization header encodes the entered credentials', () => {
   )
 })
 
-test('follow-up 503 errors explain AI service availability and timeouts', async () => {
+test('follow-up 503 errors explain AI service availability and configuration', async () => {
   const response = Response.json(
-    { detail: 'Ollama is unavailable or the request timed out' },
+    { detail: 'Gemini API is not configured' },
     { status: 503 },
   )
 
@@ -53,7 +53,36 @@ test('follow-up 503 errors explain AI service availability and timeouts', async 
     assert.ok(error instanceof Error)
     assert.equal(
       error.message,
-      'The AI service is unavailable or timed out. Check that Ollama is running, then try again.',
+      'The Gemini AI service is unavailable or not configured. Check the backend settings, then try again.',
+    )
+    return true
+  })
+})
+
+test('follow-up 504 errors explain Gemini API timeouts', async () => {
+  const response = Response.json(
+    { detail: 'Gemini API request timed out. Please try again.' },
+    { status: 504 },
+  )
+
+  await assert.rejects(parseFollowUpResponse(response), (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.equal(error.message, 'The Gemini AI service timed out. Please try again.')
+    return true
+  })
+})
+
+test('follow-up 429 errors explain Gemini API quota limits', async () => {
+  const response = Response.json(
+    { detail: 'Gemini API quota or rate limit reached' },
+    { status: 429 },
+  )
+
+  await assert.rejects(parseFollowUpResponse(response), (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.equal(
+      error.message,
+      'The Gemini API quota or rate limit was reached. Please try again later.',
     )
     return true
   })
@@ -61,7 +90,7 @@ test('follow-up 503 errors explain AI service availability and timeouts', async 
 
 test('follow-up 502 errors explain invalid AI responses', async () => {
   const response = Response.json(
-    { detail: 'Ollama returned an invalid response' },
+    { detail: 'Gemini API returned an invalid response' },
     { status: 502 },
   )
 

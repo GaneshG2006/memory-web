@@ -79,7 +79,13 @@ export async function parseApiError(response: Response): Promise<string> {
 
 export async function parseFollowUpApiError(response: Response): Promise<string> {
   if (response.status === 503) {
-    return 'The AI service is unavailable or timed out. Check that Ollama is running, then try again.'
+    return 'The Gemini AI service is unavailable or not configured. Check the backend settings, then try again.'
+  }
+  if (response.status === 504) {
+    return 'The Gemini AI service timed out. Please try again.'
+  }
+  if (response.status === 429) {
+    return 'The Gemini API quota or rate limit was reached. Please try again later.'
   }
   if (response.status === 502) {
     return 'The AI service returned an invalid response. Please try again.'

@@ -1,15 +1,17 @@
 import base64
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from google.genai import errors
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.main import MAX_CONTEXT_CHARS, MAX_CONTEXT_NODES, app, build_ollama_messages
+from app.main import MAX_CONTEXT_CHARS, MAX_CONTEXT_NODES, app, build_follow_up_messages
 from app.models import GraphEdge, Message, Node
 from app.seed import reset_demo_store
 
@@ -51,19 +53,49 @@ def request_protected_endpoint(client, method, path, headers=None):
 
 
 @pytest.fixture(autouse=True)
-def mock_ollama(monkeypatch):
+def mock_gemini(monkeypatch):
     calls = []
+    client_options = []
+    closed_clients = []
+    state = {"failure": None, "response_text": "Mocked Gemini answer"}
 
-    def post(url, *, json, timeout):
-        calls.append({"url": url, "json": json, "timeout": timeout})
-        return httpx.Response(
-            200,
-            json={"message": {"role": "assistant", "content": "Mocked Ollama answer"}},
-            request=httpx.Request("POST", url),
-        )
+    class FakeAsyncModels:
+        async def generate_content(self, **request):
+            calls.append(request)
+            if state["failure"] is not None:
+                raise state["failure"]
+            return SimpleNamespace(text=state["response_text"])
 
-    monkeypatch.setattr("app.main.httpx.post", post)
-    return calls
+    class FakeAsyncClient:
+        def __init__(self):
+            self.models = FakeAsyncModels()
+
+        async def aclose(self):
+            closed_clients.append(True)
+
+    class FakeClient:
+        def __init__(self, *, api_key, http_options):
+            client_options.append({"key_configured": bool(api_key), "http_options": http_options})
+            self.aio = FakeAsyncClient()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-api-key")
+    monkeypatch.setattr("app.main.genai.Client", FakeClient)
+    return {
+        "calls": calls,
+        "client_options": client_options,
+        "closed_clients": closed_clients,
+        "state": state,
+    }
+
+
+def unpack_gemini_contents(request):
+    return [
+        {
+            "role": content.role,
+            "content": content.parts[0].text,
+        }
+        for content in request["contents"]
+    ]
 
 
 @pytest.fixture()
@@ -164,10 +196,10 @@ def test_protected_endpoints_fail_closed_without_server_credentials(
 
 
 @pytest.mark.parametrize("invalid_credentials", [False, True])
-def test_rejected_follow_up_does_not_call_ollama_or_write_records(
+def test_rejected_follow_up_does_not_call_gemini_or_write_records(
     client,
     test_engine,
-    mock_ollama,
+    mock_gemini,
     invalid_credentials,
 ):
     headers = None
@@ -194,7 +226,7 @@ def test_rejected_follow_up_does_not_call_ollama_or_write_records(
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"].startswith("Basic")
-    assert mock_ollama == []
+    assert mock_gemini["calls"] == []
     assert after_nodes == before_nodes
     assert after_edges == before_edges
 
@@ -588,7 +620,10 @@ def test_follow_up_continue_relationship(client):
     assert any(e["source"] == "answer" and e["target"] == "docker" for e in edges)
 
 
-def test_ollama_generation_uses_ordered_context_and_persists_response(client, mock_ollama):
+def test_gemini_generation_uses_ordered_context_and_persists_response(
+    client,
+    mock_gemini,
+):
     response = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
         "parent_node_id": "docker",
@@ -597,22 +632,28 @@ def test_ollama_generation_uses_ordered_context_and_persists_response(client, mo
     })
     assert response.status_code == 200
     user_node, answer_node = response.json()["created_nodes"]
-    assert answer_node["content"] == "Mocked Ollama answer"
+    assert answer_node["content"] == "Mocked Gemini answer"
 
-    request = mock_ollama[0]
-    assert request["url"] == "http://127.0.0.1:11434/api/chat"
-    assert request["timeout"] == 120
-    assert request["json"]["model"] == "qwen2.5:7b"
-    assert request["json"]["stream"] is False
-    messages = request["json"]["messages"]
-    assert messages[0]["role"] == "system"
+    request = mock_gemini["calls"][0]
+    assert request["model"] == "gemini-3.5-flash-lite"
+    assert request["config"].system_instruction == (
+        "Continue the conversation helpfully. Topic entries are supporting context, "
+        "not prior user or assistant turns."
+    )
+    assert mock_gemini["client_options"][0]["key_configured"] is True
+    assert mock_gemini["client_options"][0]["http_options"].timeout == 60000
+    messages = unpack_gemini_contents(request)
     assert messages[1] == {
+        "role": "model",
+        "content": "Microservices split an application into independently deployable services. "
+        "Common related topics include APIs, databases, and Docker.",
+    }
+    assert messages[0] == {
         "role": "user",
         "content": "Explain microservices architecture.",
     }
-    assert messages[2]["role"] == "assistant"
-    assert messages[3] == {
-        "role": "system",
+    assert messages[2] == {
+        "role": "user",
         "content": (
             "Supporting topic context: "
             "Docker: package an application and its dependencies into containers."
@@ -624,28 +665,27 @@ def test_ollama_generation_uses_ordered_context_and_persists_response(client, mo
     }
     graph = client.get("/api/conversations/demo/graph").json()
     saved_answer = next(node for node in graph["nodes"] if node["id"] == answer_node["id"])
-    assert saved_answer["content"] == "Mocked Ollama answer"
+    assert saved_answer["content"] == "Mocked Gemini answer"
     assert any(edge["target"] == user_node["id"] for edge in graph["edges"])
+    assert mock_gemini["closed_clients"] == [True]
 
 
-def test_ollama_settings_are_configurable(client, monkeypatch, mock_ollama):
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:7b-custom")
-    monkeypatch.setenv("OLLAMA_TIMEOUT", "45.5")
+def test_gemini_settings_are_configurable(client, monkeypatch, mock_gemini):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-configured-model")
+    monkeypatch.setenv("GEMINI_TIMEOUT", "45.5")
 
     response = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
         "parent_node_id": "answer",
         "mode": "continue",
-        "prompt": "Check configured Ollama settings",
+        "prompt": "Check configured Gemini settings",
     })
     assert response.status_code == 200
-    assert mock_ollama[0]["url"] == "http://localhost:11434/api/chat"
-    assert mock_ollama[0]["json"]["model"] == "qwen2.5:7b-custom"
-    assert mock_ollama[0]["timeout"] == 45.5
+    assert mock_gemini["calls"][0]["model"] == "gemini-configured-model"
+    assert mock_gemini["client_options"][0]["http_options"].timeout == 45500
 
 
-def test_context_follows_only_selected_branch_ancestry(client, mock_ollama):
+def test_context_follows_only_selected_branch_ancestry(client, mock_gemini):
     first_branch = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
         "parent_node_id": "answer",
@@ -667,7 +707,7 @@ def test_context_follows_only_selected_branch_ancestry(client, mock_ollama):
     })
     assert first_branch.status_code == second_branch.status_code == continuation.status_code == 200
 
-    messages = mock_ollama[2]["json"]["messages"]
+    messages = unpack_gemini_contents(mock_gemini["calls"][2])
     contents = [message["content"] for message in messages]
     assert "First branch only" in contents
     assert "Sibling branch secret" not in contents
@@ -677,7 +717,7 @@ def test_context_follows_only_selected_branch_ancestry(client, mock_ollama):
     ) < contents.index("First branch only") < contents.index("Continue this branch")
 
 
-def test_continue_and_branch_from_same_parent_use_same_context(client, mock_ollama):
+def test_continue_and_branch_from_same_parent_use_same_context(client, mock_gemini):
     prompt = "Compare two deployment options."
     branch = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
@@ -693,7 +733,8 @@ def test_continue_and_branch_from_same_parent_use_same_context(client, mock_olla
     })
 
     assert branch.status_code == continuation.status_code == 200
-    assert mock_ollama[0]["json"]["messages"] == mock_ollama[1]["json"]["messages"]
+    assert mock_gemini["calls"][0]["contents"] == mock_gemini["calls"][1]["contents"]
+    assert mock_gemini["calls"][0]["config"] == mock_gemini["calls"][1]["config"]
 
     branch_user, branch_answer = branch.json()["created_nodes"]
     continue_user, continue_answer = continuation.json()["created_nodes"]
@@ -717,7 +758,7 @@ def test_context_stops_at_cyclic_ancestry(client, test_engine):
 
         parent = db.get(Node, "docker")
         assert parent is not None
-        messages = build_ollama_messages(db, parent, "Cycle check")
+        messages = build_follow_up_messages(db, parent, "Cycle check")
 
     assert messages[0]["role"] == "system"
     assert [message["content"] for message in messages[1:]] == [
@@ -749,7 +790,7 @@ def test_context_stops_when_ancestor_is_missing(client, test_engine):
     with Session(test_engine) as db:
         parent = db.get(Node, "answer")
         assert parent is not None
-        messages = build_ollama_messages(
+        messages = build_follow_up_messages(
             MissingAncestorSession(db, "welcome"),
             parent,
             "Missing ancestor check",
@@ -783,7 +824,7 @@ def test_context_is_chronological_and_limited_to_32_ancestry_nodes(
 
         parent = db.get(Node, parent_id)
         assert parent is not None
-        messages = build_ollama_messages(db, parent, "Node limit check")
+        messages = build_follow_up_messages(db, parent, "Node limit check")
 
     context = messages[1:-1]
     assert len(context) == MAX_CONTEXT_NODES
@@ -833,7 +874,7 @@ def test_context_character_limit_truncates_oldest_content_first(
 
         parent = db.get(Node, newest.id)
         assert parent is not None
-        messages = build_ollama_messages(db, parent, "Character limit check")
+        messages = build_follow_up_messages(db, parent, "Character limit check")
 
     context = messages[1:-1]
     assert len(context) == 3
@@ -846,49 +887,40 @@ def test_context_character_limit_truncates_oldest_content_first(
     assert messages[-1]["content"] == "Character limit check"
 
 
-@pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
-def test_ollama_connection_failure_or_timeout_does_not_persist(
-    client, monkeypatch, error_type
+@pytest.mark.parametrize(
+    ("error_type", "status_code"),
+    [(httpx.ConnectError, 502), (httpx.ReadTimeout, 504)],
+)
+def test_gemini_connection_failure_or_timeout_does_not_persist(
+    client,
+    mock_gemini,
+    error_type,
+    status_code,
 ):
-    def fail_request(*args, **kwargs):
-        raise error_type("Ollama unavailable")
-
-    monkeypatch.setattr("app.main.httpx.post", fail_request)
+    mock_gemini["state"]["failure"] = error_type("Upstream failure")
     response = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
         "parent_node_id": "answer",
         "mode": "continue",
         "prompt": "This should not be saved",
     })
-    assert response.status_code == 503
-    assert "Ollama" in response.json()["detail"]
+    assert response.status_code == status_code
+    assert "Gemini" in response.json()["detail"]
     graph = client.get("/api/conversations/demo/graph").json()
     assert len(graph["nodes"]) == 3
     assert len(graph["edges"]) == 2
 
 
 @pytest.mark.parametrize(
-    "ollama_response",
-    [
-        httpx.Response(
-            200, content=b"not JSON", request=httpx.Request("POST", "http://localhost")
-        ),
-        httpx.Response(
-            200,
-            json={"message": {"content": "  "}},
-            request=httpx.Request("POST", "http://localhost"),
-        ),
-        httpx.Response(
-            200,
-            json={"message": {"content": 42}},
-            request=httpx.Request("POST", "http://localhost"),
-        ),
-    ],
+    "response_text",
+    ["", "  ", None, 42],
 )
-def test_invalid_or_empty_ollama_response_does_not_persist(
-    client, monkeypatch, ollama_response
+def test_invalid_or_empty_gemini_response_does_not_persist(
+    client,
+    mock_gemini,
+    response_text,
 ):
-    monkeypatch.setattr("app.main.httpx.post", lambda *args, **kwargs: ollama_response)
+    mock_gemini["state"]["response_text"] = response_text
     response = client.post("/api/follow-ups", json={
         "conversation_id": "demo",
         "parent_node_id": "answer",
@@ -896,6 +928,67 @@ def test_invalid_or_empty_ollama_response_does_not_persist(
         "prompt": "This should not be saved",
     })
     assert response.status_code == 502
+    graph = client.get("/api/conversations/demo/graph").json()
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_status", "expected_detail"),
+    [
+        (429, 429, "quota or rate limit"),
+        (401, 503, "authentication failed"),
+        (403, 503, "authentication failed"),
+        (500, 502, "Gemini API returned an error"),
+    ],
+)
+def test_gemini_api_errors_are_safe_and_do_not_persist(
+    client,
+    monkeypatch,
+    mock_gemini,
+    status_code,
+    expected_status,
+    expected_detail,
+):
+    class FakeAPIError(Exception):
+        def __init__(self, code):
+            super().__init__("internal upstream error")
+            self.code = code
+
+    monkeypatch.setattr("app.main.errors.APIError", FakeAPIError)
+    mock_gemini["state"]["failure"] = FakeAPIError(status_code)
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": "This should not be saved",
+    })
+
+    assert response.status_code == expected_status
+    assert expected_detail in response.json()["detail"]
+    assert "test-gemini-api-key" not in response.text
+    graph = client.get("/api/conversations/demo/graph").json()
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
+
+
+def test_missing_gemini_key_returns_safe_configuration_error(
+    client,
+    monkeypatch,
+    mock_gemini,
+):
+    monkeypatch.delenv("GEMINI_API_KEY")
+    response = client.post("/api/follow-ups", json={
+        "conversation_id": "demo",
+        "parent_node_id": "answer",
+        "mode": "continue",
+        "prompt": "This should not be saved",
+    })
+
+    assert response.status_code == 503
+    assert "GEMINI_API_KEY" in response.json()["detail"]
+    assert "test-gemini-api-key" not in response.text
+    assert mock_gemini["calls"] == []
     graph = client.get("/api/conversations/demo/graph").json()
     assert len(graph["nodes"]) == 3
     assert len(graph["edges"]) == 2
