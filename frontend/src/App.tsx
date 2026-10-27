@@ -34,6 +34,7 @@ import {
   type ApiCredentials,
 } from './api'
 import { copyTextToClipboard } from './clipboard'
+import { getConversationNodeText } from './conversationNodeText'
 import './search.css'
 
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
@@ -114,7 +115,7 @@ function buildFlowNodes(items: ApiNode[], positions: Record<string, Position>): 
       kind: item.kind,
       role: item.role,
       content: item.content,
-      preview: `${item.content.slice(0, 82)}${item.content.length > 82 ? '…' : ''}`,
+      preview: getConversationNodeText(item.content).preview,
     },
     style: {
       width: 235,
@@ -524,7 +525,12 @@ export default function App() {
                 {selectedNode.kind === 'topic' ? <Brain size={13} /> : selectedNode.role === 'user' ? <UserRound size={13} /> : <Bot size={13} />}
                 <span>{selectedNode.kind === 'topic' ? 'Topic / memory' : selectedNode.role}</span>
               </div>
-              <div className="message-content">{selectedNode.content}</div>
+              <div className="message-content-section">
+                <span className="message-content-label">FULL MESSAGE</span>
+                <div className="message-content" aria-label="Full message">
+                  {getConversationNodeText(selectedNode.content).fullMessage}
+                </div>
+              </div>
               <div className="metadata-card">
                 <span className="metadata-heading">NODE DETAILS</span>
                 <div className="meta-row"><span>Node ID</span><code>{selectedNode.id.slice(0, 12)}</code></div>
@@ -546,7 +552,7 @@ export default function App() {
               {followUpError && <p className="follow-up-error" role="alert">{followUpError}</p>}
             </>
           ) : (
-            <div className="empty-state"><span className="empty-state-icon"><Network size={21} /></span><strong>Select a node to inspect</strong><p>Choose a message or topic in the graph to view its details and create a follow-up.</p></div>
+            <div className="empty-state"><span className="empty-state-icon"><Network size={21} /></span><strong>Select a node to inspect</strong><p>Choose a message or topic in the graph to read its full message and create a follow-up.</p></div>
           )}
           <div className="panel-foot"><span className="panel-foot-dot" />Memory Web <span>·</span> Local workspace</div>
         </aside>
