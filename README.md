@@ -4,6 +4,10 @@
 
 Memory Web is a local prototype for exploring conversations as connected message and topic nodes rather than as a single transcript. Select a node to inspect it, then continue the conversation or create a branch from that point. The backend stores the graph and conversation messages; the Google Gemini API generates assistant replies.
 
+## Project Status
+
+The current implementation includes a React + TypeScript frontend, a FastAPI backend, and PostgreSQL persistence. The backend integrates with the Google Gemini API to generate AI follow-ups. GitHub Actions runs frontend tests and a production build, along with backend tests.
+
 ## Architecture
 
 - **Frontend:** React and TypeScript, bundled and served for development with Vite. React Flow (`@xyflow/react`) renders the conversation graph.
