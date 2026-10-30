@@ -40,3 +40,23 @@ test('reports clipboard write failures to the caller', async () => {
     }
   }
 })
+
+test('reports when clipboard access is unavailable', async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {},
+  })
+
+  try {
+    await assert.rejects(copyTextToClipboard('message'), {
+      message: 'Clipboard access is unavailable',
+    })
+  } finally {
+    if (originalNavigator) {
+      Object.defineProperty(globalThis, 'navigator', originalNavigator)
+    } else {
+      Reflect.deleteProperty(globalThis, 'navigator')
+    }
+  }
+})
