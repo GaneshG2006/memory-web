@@ -32,6 +32,8 @@ import {
   parseApiError,
   parseFollowUpResponse,
   type ApiCredentials,
+  type FollowUpRequest,
+  createFollowUpRequest,
 } from './api'
 import { copyTextToClipboard } from './clipboard'
 import { getConversationNodeText } from './conversationNodeText'
@@ -144,6 +146,8 @@ export default function App() {
   const [status, setStatus] = useState('Enter API credentials to connect.')
   const [busy, setBusy] = useState(false)
   const [followUpError, setFollowUpError] = useState('')
+  const [retryRequest, setRetryRequest] = useState<FollowUpRequest | null>(null)
+  const followUpBusy = useRef(false)
   const flowInstance = useRef<ReactFlowInstance | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -154,6 +158,7 @@ export default function App() {
     setEdges([])
     setSelected(null)
     setSearchResults([])
+    setRetryRequest(null)
     setAuthError(AUTHENTICATION_ERROR)
     setStatus('Authentication required.')
   }
@@ -276,6 +281,7 @@ export default function App() {
     }
 
     setFollowUpError('')
+    setRetryRequest(null)
     setSelected(selection.node)
     setNodes((current) => current.map((node) => ({
       ...node,
@@ -308,12 +314,19 @@ export default function App() {
     [onNodesChange],
   )
 
-  async function submitFollowUp() {
-    if (!selectedNode || !prompt.trim()) return
+  async function submitFollowUp(retry?: FollowUpRequest) {
+    if (followUpBusy.current) return
+    const request = retry ?? (
+      selectedNode && prompt.trim()
+        ? createFollowUpRequest('demo', selectedNode.id, mode, prompt)
+        : null
+    )
+    if (!request) return
     if (!credentials) {
       setAuthError('Enter API credentials to create a follow-up.')
       return
     }
+    followUpBusy.current = true
     const controller = new AbortController()
     const timeoutId = window.setTimeout(
       () => controller.abort(),
@@ -326,12 +339,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({
-          conversation_id: 'demo',
-          parent_node_id: selectedNode.id,
-          mode,
-          prompt: prompt.trim(),
-        }),
+        body: JSON.stringify(request),
       })
       if (response.status === 401) {
         handleUnauthorized()
@@ -342,18 +350,21 @@ export default function App() {
         created_edges?: unknown[]
       }>(response)
       setPrompt('')
+      setRetryRequest(null)
       await refresh()
       const assistantNode = result.created_nodes?.find((item) => item.role === 'assistant')
       if (assistantNode) {
         setSelected(assistantNode)
       }
-      setStatus(`Follow-up added · ${mode} mode · AI response`)
+      setStatus(`Follow-up added · ${request.mode} mode · AI response`)
     } catch (error) {
       const errorMessage = getFollowUpRequestErrorMessage(error)
+      setRetryRequest(request)
       setFollowUpError(errorMessage)
       setStatus(errorMessage)
     } finally {
       window.clearTimeout(timeoutId)
+      followUpBusy.current = false
       setBusy(false)
     }
   }
@@ -438,6 +449,7 @@ export default function App() {
                   placeholder="Search messages and topics…"
                   aria-label="Search messages and topics"
                 />
+                <kbd className="search-shortcut-hint" aria-hidden="true">Ctrl + K</kbd>
               </label>
               <button className="search-button" type="submit" disabled={!credentials || searchBusy}>
                 {searchBusy ? 'Searching…' : 'Search'}
@@ -486,11 +498,13 @@ export default function App() {
                 if (item) {
                   setSelected(item)
                   setFollowUpError('')
+                  setRetryRequest(null)
                 }
               }}
               onPaneClick={() => {
-                setSelected(null)
-                setFollowUpError('')
+              setSelected(null)
+              setFollowUpError('')
+              setRetryRequest(null)
               }}
               fitView
               fitViewOptions={{ padding: 0.22 }}
@@ -541,15 +555,36 @@ export default function App() {
               <div className="follow-up-heading"><h3>Follow-up</h3><span>AI RESPONSE</span></div>
               <p className="hint">Your question uses this node's conversation ancestry as context. Gemini generates the response.</p>
               <div className="mode-switch">
-                <button className={mode === 'branch' ? 'mode active' : 'mode'} onClick={() => setMode('branch')}><GitBranch size={15} /> Branch</button>
-                <button className={mode === 'continue' ? 'mode active' : 'mode'} onClick={() => setMode('continue')}><Plus size={15} /> Continue</button>
+                <button className={mode === 'branch' ? 'mode active' : 'mode'} disabled={busy} onClick={() => {
+                  setMode('branch')
+                  setFollowUpError('')
+                  setRetryRequest(null)
+                }}><GitBranch size={15} /> Branch</button>
+                <button className={mode === 'continue' ? 'mode active' : 'mode'} disabled={busy} onClick={() => {
+                  setMode('continue')
+                  setFollowUpError('')
+                  setRetryRequest(null)
+                }}><Plus size={15} /> Continue</button>
               </div>
-              <textarea value={prompt} onChange={(event) => {
+              <textarea disabled={busy} value={prompt} onChange={(event) => {
                 setPrompt(event.target.value)
                 setFollowUpError('')
+                setRetryRequest(null)
               }} placeholder="Ask a follow-up about this node…" rows={4} />
               <button className="primary" onClick={() => void submitFollowUp()} disabled={!credentials || busy || !prompt.trim()}><Send size={14} />{busy ? 'Adding…' : 'Add follow-up'}</button>
               {followUpError && <p className="follow-up-error" role="alert">{followUpError}</p>}
+              {retryRequest && followUpError && (
+                <button
+                  className="search-button"
+                  type="button"
+                  disabled={!credentials || busy}
+                  aria-label={`Retry failed ${retryRequest.mode} follow-up for node ${retryRequest.parent_node_id}`}
+                  onClick={() => void submitFollowUp(retryRequest)}
+                >
+                  <RotateCw size={13} className={busy ? 'is-spinning' : ''} />
+                  {busy ? 'Retrying…' : 'Retry follow-up'}
+                </button>
+              )}
             </>
           ) : (
             <div className="empty-state"><span className="empty-state-icon"><Network size={21} /></span><strong>Select a node to inspect</strong><p>Choose a message or topic in the graph to read its full message and create a follow-up.</p></div>

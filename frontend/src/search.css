@@ -48,6 +48,18 @@
   color: #767676;
 }
 
+.search-shortcut-hint {
+  flex: 0 0 auto;
+  border: 1px solid #343434;
+  border-radius: 4px;
+  padding: 2px 5px;
+  color: #737373;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .search-button {
   min-height: 33px;
   border: 1px solid #505050;
