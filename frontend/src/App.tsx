@@ -28,12 +28,8 @@ import {
 } from './search'
 import {
   apiFetch,
-  getFollowUpRequestErrorMessage,
   parseApiError,
-  parseFollowUpResponse,
   type ApiCredentials,
-  type FollowUpRequest,
-  createFollowUpRequest,
 } from './api'
 import { copyTextToClipboard } from './clipboard'
 import { getConversationNodeText } from './conversationNodeText'
@@ -42,7 +38,6 @@ import './search.css'
 type GraphResponse = { nodes: ApiNode[]; edges: ApiEdge[] }
 type SearchResponse = { results: SearchResult[] }
 const AUTHENTICATION_ERROR = 'Authentication failed. Check the username and password, then try again.'
-const FOLLOW_UP_REQUEST_TIMEOUT_MS = 130_000
 
 type ConversationNodeData = {
   kind: string
@@ -146,8 +141,6 @@ export default function App() {
   const [status, setStatus] = useState('Enter API credentials to connect.')
   const [busy, setBusy] = useState(false)
   const [followUpError, setFollowUpError] = useState('')
-  const [retryRequest, setRetryRequest] = useState<FollowUpRequest | null>(null)
-  const followUpBusy = useRef(false)
   const flowInstance = useRef<ReactFlowInstance | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -158,7 +151,6 @@ export default function App() {
     setEdges([])
     setSelected(null)
     setSearchResults([])
-    setRetryRequest(null)
     setAuthError(AUTHENTICATION_ERROR)
     setStatus('Authentication required.')
   }
@@ -279,9 +271,8 @@ export default function App() {
       setSearchError('This node is no longer in the graph. Refresh the graph and search again.')
       return
     }
-
     setFollowUpError('')
-    setRetryRequest(null)
+    setFollowUpError('')
     setSelected(selection.node)
     setNodes((current) => current.map((node) => ({
       ...node,
@@ -314,57 +305,40 @@ export default function App() {
     [onNodesChange],
   )
 
-  async function submitFollowUp(retry?: FollowUpRequest) {
-    if (followUpBusy.current) return
-    const request = retry ?? (
-      selectedNode && prompt.trim()
-        ? createFollowUpRequest('demo', selectedNode.id, mode, prompt)
-        : null
-    )
-    if (!request) return
+  async function submitFollowUp() {
+    if (!selectedNode || !prompt.trim()) return
     if (!credentials) {
       setAuthError('Enter API credentials to create a follow-up.')
       return
     }
-    followUpBusy.current = true
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      FOLLOW_UP_REQUEST_TIMEOUT_MS,
-    )
     setFollowUpError('')
     setBusy(true)
     try {
       const response = await apiFetch('/api/follow-ups', credentials, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify(request),
+        body: JSON.stringify({
+          conversation_id: 'demo',
+          parent_node_id: selectedNode.id,
+          mode,
+          prompt: prompt.trim(),
+        }),
       })
       if (response.status === 401) {
         handleUnauthorized()
         return
       }
-      const result = await parseFollowUpResponse<{
-        created_nodes?: ApiNode[]
-        created_edges?: unknown[]
-      }>(response)
-      setPrompt('')
-      setRetryRequest(null)
-      await refresh()
-      const assistantNode = result.created_nodes?.find((item) => item.role === 'assistant')
-      if (assistantNode) {
-        setSelected(assistantNode)
+      if (!response.ok) {
+        throw new Error(await parseApiError(response))
       }
-      setStatus(`Follow-up added · ${request.mode} mode · AI response`)
+      setPrompt('')
+      await refresh()
+      setStatus(`Follow-up added · ${mode} mode`)
     } catch (error) {
-      const errorMessage = getFollowUpRequestErrorMessage(error)
-      setRetryRequest(request)
+      const errorMessage = error instanceof Error ? error.message : 'Could not create follow-up'
       setFollowUpError(errorMessage)
       setStatus(errorMessage)
     } finally {
-      window.clearTimeout(timeoutId)
-      followUpBusy.current = false
       setBusy(false)
     }
   }
@@ -498,13 +472,11 @@ export default function App() {
                 if (item) {
                   setSelected(item)
                   setFollowUpError('')
-                  setRetryRequest(null)
                 }
               }}
               onPaneClick={() => {
               setSelected(null)
               setFollowUpError('')
-              setRetryRequest(null)
               }}
               fitView
               fitViewOptions={{ padding: 0.22 }}
@@ -558,33 +530,18 @@ export default function App() {
                 <button className={mode === 'branch' ? 'mode active' : 'mode'} disabled={busy} onClick={() => {
                   setMode('branch')
                   setFollowUpError('')
-                  setRetryRequest(null)
                 }}><GitBranch size={15} /> Branch</button>
                 <button className={mode === 'continue' ? 'mode active' : 'mode'} disabled={busy} onClick={() => {
                   setMode('continue')
                   setFollowUpError('')
-                  setRetryRequest(null)
                 }}><Plus size={15} /> Continue</button>
               </div>
               <textarea disabled={busy} value={prompt} onChange={(event) => {
                 setPrompt(event.target.value)
                 setFollowUpError('')
-                setRetryRequest(null)
               }} placeholder="Ask a follow-up about this node…" rows={4} />
               <button className="primary" onClick={() => void submitFollowUp()} disabled={!credentials || busy || !prompt.trim()}><Send size={14} />{busy ? 'Adding…' : 'Add follow-up'}</button>
               {followUpError && <p className="follow-up-error" role="alert">{followUpError}</p>}
-              {retryRequest && followUpError && (
-                <button
-                  className="search-button"
-                  type="button"
-                  disabled={!credentials || busy}
-                  aria-label={`Retry failed ${retryRequest.mode} follow-up for node ${retryRequest.parent_node_id}`}
-                  onClick={() => void submitFollowUp(retryRequest)}
-                >
-                  <RotateCw size={13} className={busy ? 'is-spinning' : ''} />
-                  {busy ? 'Retrying…' : 'Retry follow-up'}
-                </button>
-              )}
             </>
           ) : (
             <div className="empty-state"><span className="empty-state-icon"><Network size={21} /></span><strong>Select a node to inspect</strong><p>Choose a message or topic in the graph to read its full message and create a follow-up.</p></div>
