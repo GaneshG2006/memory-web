@@ -32,6 +32,14 @@ The frontend currently loads the seeded `demo` conversation from the API at `htt
 - Health and graph endpoints, request validation, idempotent demo data seeding, and saved graph data using the existing PostgreSQL schema.
 - Automated backend API and frontend tests.
 
+## Keyboard Shortcuts
+
+- **Ctrl + K:** Focus the conversation search input.
+
+### AI follow-up retries
+
+If an AI follow-up fails, users can manually retry it without retyping the prompt. The retry keeps the original Branch or Continue mode and parent node, so Gemini receives the same conversation context. A request ID makes replaying the same request idempotent, preventing duplicate graph records if the original result was saved but not received by the frontend. Quota or rate-limit errors require waiting before retrying; retries are never automatic.
+
 ## Windows local development
 
 Prerequisites: Git, Python 3.11 or newer, Node.js with npm, Docker Desktop with Docker Compose, and a Gemini API key from Google AI Studio.
