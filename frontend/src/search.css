@@ -28,8 +28,8 @@
 }
 
 .search-input-wrap:focus-within {
-  border-color: #737373;
-  box-shadow: 0 0 0 3px rgba(129, 129, 129, .1);
+  border-color: #858585;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .08);
 }
 
 .search-input-wrap input {
