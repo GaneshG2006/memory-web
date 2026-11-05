@@ -5,6 +5,32 @@ export type ApiCredentials = {
   password: string
 }
 
+export type FollowUpMode = 'continue' | 'branch'
+
+export type FollowUpRequest = {
+  conversation_id: string
+  parent_node_id: string
+  mode: FollowUpMode
+  prompt: string
+  request_id: string
+}
+
+export function createFollowUpRequest(
+  conversationId: string,
+  parentNodeId: string,
+  mode: FollowUpMode,
+  prompt: string,
+  requestId: string = globalThis.crypto.randomUUID(),
+): FollowUpRequest {
+  return {
+    conversation_id: conversationId,
+    parent_node_id: parentNodeId,
+    mode,
+    prompt: prompt.trim(),
+    request_id: requestId,
+  }
+}
+
 export function getApiUrl(
   path: string,
   baseUrl: string | undefined = import.meta.env?.VITE_API_URL,

@@ -2,11 +2,29 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createBasicAuthHeader,
+  createFollowUpRequest,
   getApiUrl,
   getFollowUpRequestErrorMessage,
   parseApiError,
   parseFollowUpResponse,
 } from './api.ts'
+
+test('follow-up request captures the original context and normalizes its prompt', () => {
+  assert.deepEqual(
+    createFollowUpRequest('demo', 'original-parent', 'branch', '  Original question  ', 'retry-id'),
+    {
+      conversation_id: 'demo',
+      parent_node_id: 'original-parent',
+      mode: 'branch',
+      prompt: 'Original question',
+      request_id: 'retry-id',
+    },
+  )
+  assert.equal(
+    createFollowUpRequest('demo', 'another-parent', 'continue', 'Continue here', 'continue-id').mode,
+    'continue',
+  )
+})
 
 test('API URL defaults to the local development server', () => {
   assert.equal(

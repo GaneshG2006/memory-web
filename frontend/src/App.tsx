@@ -433,7 +433,9 @@ export default function App() {
               <p className="search-message search-error" role="alert">{searchError}</p>
             ) : (
               <p className="search-message" aria-live="polite">
-                {searchBusy ? 'Searching conversation…' : getSearchStatus(searchQuery, searchResults.length, hasSearched)}
+                {searchBusy ? (
+                  <><RotateCw size={10} className="is-spinning" aria-hidden="true" /> Searching conversation…</>
+                ) : getSearchStatus(searchQuery, searchResults.length, hasSearched)}
               </p>
             )}
             {searchResults.length > 0 && (
