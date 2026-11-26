@@ -6,7 +6,7 @@ import {
   useEdgesState, useNodesState,
 } from '@xyflow/react'
 import {
-  Bot, Brain, Check, Copy, GitBranch, LayoutGrid, MessageSquare, Network, Plus,
+  ArrowUp, Bot, Brain, Check, Copy, GitBranch, LayoutGrid, MessageSquare, Network, Plus,
   RotateCw, Search, Send, UserRound,
 } from 'lucide-react'
 import {
@@ -141,8 +141,26 @@ export default function App() {
   const [status, setStatus] = useState('Enter API credentials to connect.')
   const [busy, setBusy] = useState(false)
   const [followUpError, setFollowUpError] = useState('')
+  const [showBackToTop, setShowBackToTop] = useState(false)
   const flowInstance = useRef<ReactFlowInstance | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const inspectorRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const inspector = inspectorRef.current
+    const updateVisibility = () => {
+      setShowBackToTop(window.scrollY > 0 || (inspector?.scrollTop ?? 0) > 0)
+    }
+
+    window.addEventListener('scroll', updateVisibility, { passive: true })
+    inspector?.addEventListener('scroll', updateVisibility, { passive: true })
+    updateVisibility()
+
+    return () => {
+      window.removeEventListener('scroll', updateVisibility)
+      inspector?.removeEventListener('scroll', updateVisibility)
+    }
+  }, [])
 
   function handleUnauthorized() {
     setCredentials(null)
@@ -502,7 +520,7 @@ export default function App() {
             ) : null}
           </div>
         </div>
-        <aside className="inspector">
+        <aside ref={inspectorRef} className="inspector">
           <div className="inspector-heading">
             <div className="panel-title"><MessageSquare size={16} /><h2>Node inspector</h2></div>
             <span className="inspector-indicator" />
@@ -552,6 +570,20 @@ export default function App() {
         </aside>
         </section>
       </div>
+      {showBackToTop && (
+        <button
+          className="back-to-top"
+          type="button"
+          aria-label="Back to top"
+          title="Back to top"
+          onClick={() => {
+            window.scrollTo({ top: 0, behavior: 'smooth' })
+            inspectorRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+          }}
+        >
+          <ArrowUp size={16} aria-hidden="true" />
+        </button>
+      )}
     </main>
   )
 }

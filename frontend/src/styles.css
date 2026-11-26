@@ -281,6 +281,30 @@ button {
   opacity: .52;
 }
 
+.back-to-top {
+  position: fixed;
+  z-index: 5;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #363636;
+  border-radius: 8px;
+  background: #1b1b1b;
+  color: #c8c8c8;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, color .16s ease;
+}
+
+.back-to-top:hover,
+.back-to-top:focus-visible {
+  border-color: #5c5c5c;
+  background: #222222;
+  color: #eaeaea;
+}
+
 .is-spinning {
   animation: spin .9s linear infinite;
 }
